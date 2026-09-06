@@ -1,0 +1,6 @@
+{
+  "name": "Matrix Workspace",
+  "description": "A unified command center to seamlessly manage multiple Google Workspace accounts, emails, files, and calendars in a single dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
