@@ -6,13 +6,15 @@ interface SettingsViewProps {
   setIsByokMode: (val: boolean) => void;
   customClientId: string;
   setCustomClientId: (val: string) => void;
+  handleLogin?: (forceSelect?: boolean) => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   isByokMode,
   setIsByokMode,
   customClientId,
-  setCustomClientId
+  setCustomClientId,
+  handleLogin
 }) => {
   return (
     <div className="absolute inset-0 bg-neutral-50 flex-col overflow-y-auto flex">
@@ -62,6 +64,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="mt-3 text-xs text-neutral-500">
                   Required Scopes: <code className="bg-neutral-100 px-1 py-0.5 rounded text-[10px]">drive</code> <code className="bg-neutral-100 px-1 py-0.5 rounded text-[10px]">gmail.readonly</code> <code className="bg-neutral-100 px-1 py-0.5 rounded text-[10px]">calendar.readonly</code>
                 </div>
+                {handleLogin && customClientId && customClientId.trim() !== '' && (
+                  <button 
+                    onClick={() => handleLogin(true)}
+                    className="mt-6 w-full py-3 bg-black text-white rounded-xl text-sm font-bold shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all"
+                  >
+                    Save & Connect Account
+                  </button>
+                )}
               </div>
             )}
           </div>

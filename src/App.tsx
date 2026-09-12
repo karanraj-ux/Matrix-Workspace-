@@ -109,7 +109,6 @@ export default function App() {
       // If no custom Client ID is set, direct to Settings!
       if (!customClientId || !customClientId.trim()) {
         setCurrentView('settings');
-        alert('Please enter your Google OAuth Client ID in Settings to connect your accounts.');
         setIsAddingAccount(false);
         return;
       }
@@ -422,7 +421,7 @@ export default function App() {
     );
   }
 
-  if (accounts.length === 0) {
+  if (accounts.length === 0 && currentView !== 'settings') {
     return (
       <div className="min-h-screen w-screen flex flex-col bg-neutral-50 text-neutral-900 font-sans">
         
@@ -480,7 +479,7 @@ export default function App() {
             <div className="flex gap-6 text-sm text-neutral-500 font-medium">
               <button onClick={() => setActiveStaticPage('privacy')} className="hover:text-black transition-colors">Privacy Policy</button>
               <button onClick={() => setActiveStaticPage('terms')} className="hover:text-black transition-colors">Terms of Service</button>
-              <a href="mailto:founder@example.com" className="hover:text-black transition-colors">Contact</a>
+              <a href="mailto:kr378434@gmail.com" className="hover:text-black transition-colors">Contact</a>
             </div>
           </div>
         </footer>
@@ -641,6 +640,7 @@ export default function App() {
                 setIsByokMode={setIsByokMode}
                 customClientId={customClientId}
                 setCustomClientId={setCustomClientId}
+                handleLogin={handleLogin}
               />
             </div>
 
@@ -724,6 +724,15 @@ export default function App() {
               className="mt-6 w-full py-3 bg-neutral-900 text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {isAddingAccount ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Add Another Account
+            </button>
+            <button 
+              onClick={() => {
+                setCurrentView('settings');
+                document.getElementById('mobile-accounts-drawer')?.classList.add('hidden');
+              }}
+              className="mt-3 w-full py-3 bg-neutral-100 text-neutral-700 hover:bg-neutral-200 rounded-xl text-sm font-medium flex items-center justify-center gap-2"
+            >
+              <Layers size={16} /> Security & Settings (BYOK)
             </button>
           </div>
         </div>
