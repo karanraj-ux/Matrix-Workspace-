@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Layers, Search, Plus, CheckSquare, Square, Mail, FileText, Calendar, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard } from 'lucide-react';
 import { get, set } from 'idb-keyval';
-import { googleSignIn, initAuth, logout } from './auth';
+import { logout } from './auth';
 
 import { fetchDriveFiles, fetchGmailMessages, fetchCalendarEvents } from './services/googleService';
 import { AccountToken, GmailMessage, DriveFile, CalendarEvent } from './types';
@@ -19,8 +19,6 @@ import { DashboardView } from './views/DashboardView';
 import { useAccountPersistence } from './hooks/useAccountPersistence';
 
 export default function App() {
-  const [primaryUser, setPrimaryUser] = useState<any>(null);
-  
   const {
     isInitializing,
     hydrationError,
@@ -104,67 +102,32 @@ export default function App() {
     fetchStreams();
   }, [activeAccountIds, accounts]);
 
-  useEffect(() => {
-    // We only use initAuth for the initial login popup flow now.
-    // Persistence is handled by IndexedDB above to support multiple concurrent accounts.
-    const unsubscribe = initAuth((user) => {
-      if (user) {
-        setPrimaryUser(user);
-      }
-    });
-    return unsubscribe;
-  }, []);
-
   const handleLogin = async (forceSelect = false) => {
-    // Artificial Cap: Block 3rd account if they aren't using BYOK (The Upgrade Hook)
-    if (!isByokMode && accounts.length >= 2) {
-      setShowUpgradeModal(true);
-      return;
-    }
-
     try {
       setIsAddingAccount(true);
       
-      // BYOK FLOW (Google Identity Services)
-      if (isByokMode && customClientId) {
-        if (!document.getElementById('gsi-script')) {
-          const script = document.createElement('script');
-          script.id = 'gsi-script';
-          script.src = 'https://accounts.google.com/gsi/client';
-          script.async = true;
-          script.defer = true;
-          script.onload = () => triggerGsiLogin();
-          document.body.appendChild(script);
-        } else {
-          triggerGsiLogin();
-        }
+      // If no custom Client ID is set, direct to Settings!
+      if (!customClientId || !customClientId.trim()) {
+        setCurrentView('settings');
+        alert('Please enter your Google OAuth Client ID in Settings to connect your accounts.');
+        setIsAddingAccount(false);
         return;
       }
 
-      // FIREBASE FLOW (Default Fallback)
-      const { user, accessToken } = await googleSignIn(forceSelect);
-      
-      const newAccount: AccountToken = {
-        id: user.uid,
-        email: user.email,
-        name: user.displayName,
-        photoURL: user.photoURL,
-        accessToken
-      };
-
-      setAccounts(prev => {
-        // Prevent duplicates
-        if (prev.find(a => a.id === newAccount.id)) {
-          return prev.map(a => a.id === newAccount.id ? newAccount : a);
-        }
-        return [...prev, newAccount];
-      });
-
-      setActiveAccountIds(prev => new Set(prev).add(newAccount.id));
-      
+      // BYOK FLOW (Google Identity Services)
+      if (!document.getElementById('gsi-script')) {
+        const script = document.createElement('script');
+        script.id = 'gsi-script';
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.async = true;
+        script.defer = true;
+        script.onload = () => triggerGsiLogin();
+        document.body.appendChild(script);
+      } else {
+        triggerGsiLogin();
+      }
     } catch (error) {
       console.error(error);
-    } finally {
       setIsAddingAccount(false);
     }
   };
@@ -172,8 +135,8 @@ export default function App() {
   const triggerGsiLogin = () => {
     try {
       const client = (window as any).google.accounts.oauth2.initTokenClient({
-        client_id: customClientId,
-        scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly',
+        client_id: customClientId.trim(),
+        scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.readonly',
         prompt: 'consent select_account',
         callback: async (tokenResponse: any) => {
           if (tokenResponse.error) {
@@ -367,16 +330,43 @@ export default function App() {
     setIsTransferring(true);
     try {
       // 1. Download blob from Source Account
-      const fetchRes = await fetch(`https://www.googleapis.com/drive/v3/files/${transferFile.id}?alt=media`, {
+      const isWorkspaceFile = transferFile.mimeType.startsWith('application/vnd.google-apps.');
+      let downloadUrl = `https://www.googleapis.com/drive/v3/files/${transferFile.id}?alt=media`;
+      let targetMimeType = transferFile.mimeType;
+      let targetName = transferFile.name;
+
+      // Handle Workspace exports
+      if (isWorkspaceFile) {
+        if (transferFile.mimeType === 'application/vnd.google-apps.document') {
+          targetMimeType = 'application/pdf';
+          targetName = `${transferFile.name}.pdf`;
+        } else if (transferFile.mimeType === 'application/vnd.google-apps.spreadsheet') {
+          targetMimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'; // xlsx
+          targetName = `${transferFile.name}.xlsx`;
+        } else if (transferFile.mimeType === 'application/vnd.google-apps.presentation') {
+          targetMimeType = 'application/pdf';
+          targetName = `${transferFile.name}.pdf`;
+        } else {
+          // Fallback to PDF for other google apps
+          targetMimeType = 'application/pdf';
+          targetName = `${transferFile.name}.pdf`;
+        }
+        downloadUrl = `https://www.googleapis.com/drive/v3/files/${transferFile.id}/export?mimeType=${targetMimeType}`;
+      }
+
+      const fetchRes = await fetch(downloadUrl, {
         headers: { Authorization: `Bearer ${sourceAccount.accessToken}` }
       });
-      if (!fetchRes.ok) throw new Error("Failed to download from source");
+      if (!fetchRes.ok) {
+        const errText = await fetchRes.text();
+        throw new Error(`Failed to download from source: ${errText}`);
+      }
       const blob = await fetchRes.blob();
 
       // 2. Upload to Target Account via Multipart
       const metadata = {
-        name: transferFile.name,
-        mimeType: transferFile.mimeType
+        name: targetName,
+        mimeType: targetMimeType
       };
       
       const form = new FormData();
@@ -389,7 +379,10 @@ export default function App() {
         body: form
       });
 
-      if (!uploadRes.ok) throw new Error("Failed to upload to target");
+      if (!uploadRes.ok) {
+        const errText = await uploadRes.text();
+        throw new Error(`Failed to upload to target: ${errText}`);
+      }
       
       setTransferSuccess(true);
       setTimeout(() => {
@@ -399,7 +392,7 @@ export default function App() {
 
     } catch (e) {
       console.error("Magic Transfer Failed:", e);
-      alert("Transfer failed. Please check console.");
+      alert("Transfer failed. Please check console for details.");
     } finally {
       setIsTransferring(false);
     }
