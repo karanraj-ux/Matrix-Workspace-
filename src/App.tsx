@@ -433,40 +433,40 @@ export default function App() {
             </div>
             <span className="font-bold tracking-tight">Matrix Workspace</span>
           </div>
-          <div className="flex gap-4 text-sm font-medium text-neutral-500">
-            <button onClick={() => setActiveStaticPage('about')} className="hover:text-black transition-colors">About</button>
-            <button onClick={() => setActiveStaticPage('pricing')} className="hover:text-black transition-colors">Pricing</button>
+          <div className="flex items-center gap-4 text-sm font-medium text-neutral-500">
+            <button onClick={() => setActiveStaticPage('about')} className="hover:text-black transition-colors hidden sm:block">Architecture</button>
+            <button onClick={() => setActiveStaticPage('pricing')} className="bg-black hover:bg-neutral-800 text-white px-4 py-1.5 rounded-full transition-colors font-bold text-xs flex items-center gap-2">
+              Get Lifetime Access
+            </button>
           </div>
         </header>
 
         {/* Hero Section */}
         <main className="flex-1 flex flex-col items-center justify-center p-6 text-center">
-          <div className="max-w-3xl mx-auto space-y-8">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-bold uppercase tracking-wider mb-4 border border-blue-100">
-              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-              Limited Beta: 50 Seats Remaining
+          <div className="max-w-2xl mx-auto space-y-8">
+            <div className="w-16 h-16 bg-neutral-100 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-neutral-200">
+               <Layers className="w-8 h-8 text-neutral-800" />
             </div>
             
-            <h1 className="text-5xl md:text-7xl font-black tracking-tight leading-[1.1] text-neutral-900">
-              Stop switching <br className="hidden md:block"/> Chrome profiles.
+            <h1 className="text-4xl md:text-5xl font-black tracking-tight leading-[1.1] text-neutral-900">
+              Unified Workspace
             </h1>
             
-            <p className="text-lg md:text-xl text-neutral-500 max-w-2xl mx-auto leading-relaxed">
-              The zero-server, high-density dashboard for Agency Owners. 
-              Read 5 inboxes, cross-transfer Drive files, and merge your calendars into a single secure viewport.
+            <p className="text-lg text-neutral-500 max-w-xl mx-auto leading-relaxed">
+              Connect your Google accounts to access Mail, Calendar, and Drive in a single secure, client-side dashboard. 
             </p>
             
-            <div className="pt-8 flex flex-col items-center gap-4">
+            <div className="pt-6 flex flex-col items-center gap-4">
               <button 
                 onClick={() => handleLogin(false)}
                 disabled={isAddingAccount}
-                className="py-4 px-8 bg-black hover:bg-neutral-800 text-white rounded-xl font-bold text-lg transition-all shadow-xl hover:shadow-2xl hover:-translate-y-1 flex items-center justify-center gap-3 disabled:opacity-70 disabled:hover:translate-y-0 w-full md:w-auto"
+                className="py-3.5 px-8 bg-black hover:bg-neutral-800 text-white rounded-xl font-bold text-base transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-3 disabled:opacity-70 disabled:hover:translate-y-0 w-full md:w-auto"
               >
-                {isAddingAccount ? <Loader2 className="animate-spin w-5 h-5" /> : 'Connect Google Workspace'}
+                {isAddingAccount ? <Loader2 className="animate-spin w-5 h-5" /> : 'Connect Google Account'}
               </button>
-              <div className="flex items-center gap-2 text-sm text-neutral-400 font-medium">
-                <CheckCircle2 className="w-4 h-4 text-green-500" />
-                No backend servers. 100% private.
+              <div className="flex items-center gap-2 text-xs text-neutral-400 font-medium mt-2">
+                <CheckCircle2 className="w-3.5 h-3.5 text-neutral-400" />
+                100% Client-Side. Your data never leaves the browser.
               </div>
             </div>
           </div>
@@ -518,36 +518,45 @@ export default function App() {
 
                  {activeStaticPage === 'about' && (
                    <>
-                     <h1 className="text-4xl font-black mb-8">About Matrix</h1>
-                     <p className="text-neutral-600 mb-6">Matrix was built by founders who were exhausted by the constant friction of logging in and out of 6 different Google Chrome profiles just to check client emails and transfer invoice PDFs.</p>
-                     <p className="text-neutral-600 mb-6">We realized that 99% of "API aggregators" on the market steal your data and sell it to third parties. We wanted a clean, secure, localized dashboard. So we built one.</p>
+                     <h1 className="text-4xl font-black mb-8">System Architecture</h1>
+                     <p className="text-neutral-600 mb-6">Matrix Workspace is a strictly client-side application designed to aggregate your Google services without relying on backend servers.</p>
+                     <p className="text-neutral-600 mb-6">By utilizing Google Identity Services (GSI) and IndexedDB, this application manages multiple OAuth tokens concurrently within your browser memory. This guarantees that your private emails, files, and calendar events are never transmitted to third-party databases.</p>
                    </>
                  )}
 
                  {activeStaticPage === 'pricing' && (
                    <>
-                     <h1 className="text-4xl font-black mb-8">Enterprise Pricing</h1>
-                     <div className="grid md:grid-cols-2 gap-8 mt-12">
-                       <div className="border-2 border-neutral-200 rounded-2xl p-8">
-                         <h3 className="text-xl font-bold mb-2">Early Beta</h3>
-                         <div className="text-4xl font-black mb-4">Free</div>
-                         <p className="text-neutral-500 mb-6">Limited to 50 active users to respect shared API quotas.</p>
-                         <ul className="space-y-3 font-medium text-neutral-700">
-                           <li>• Max 2 Connected Accounts</li>
-                           <li>• Unified Inbox</li>
-                           <li>• Standard Transfer Speed</li>
+                     <h1 className="text-4xl font-black mb-6">Unlock Matrix Workspace.</h1>
+                     <p className="text-xl text-neutral-600 mb-10 leading-relaxed">
+                       Stop logging in and out of different Chrome profiles. Aggregate all your client inboxes, calendars, and files into a single, secure dashboard.
+                     </p>
+                     
+                     <div className="grid md:grid-cols-2 gap-8">
+                       <div className="border border-neutral-200 bg-neutral-50 rounded-2xl p-8 flex flex-col shadow-sm">
+                         <h3 className="text-lg font-bold mb-6 flex items-center gap-2 text-neutral-900">
+                           <Layers className="w-5 h-5 text-neutral-500" /> What's included?
+                         </h3>
+                         <ul className="space-y-4 text-sm font-medium text-neutral-600 flex-1">
+                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-neutral-900 shrink-0 mt-0.5" /> <span><strong>Unified Inbox.</strong> Read emails from up to 5 accounts at once.</span></li>
+                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-neutral-900 shrink-0 mt-0.5" /> <span><strong>Zero-Server File Transfers.</strong> Move files between Google Drives seamlessly.</span></li>
+                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-neutral-900 shrink-0 mt-0.5" /> <span><strong>Merged Calendar.</strong> View all your appointments in one secure timeline.</span></li>
+                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-neutral-900 shrink-0 mt-0.5" /> <span><strong>100% Client-Side Privacy.</strong> Your data never touches our servers.</span></li>
                          </ul>
                        </div>
-                       <div className="border-2 border-black bg-black text-white rounded-2xl p-8 shadow-2xl relative overflow-hidden">
-                         <div className="absolute top-4 right-4 bg-white text-black text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider">Unlimited</div>
-                         <h3 className="text-xl font-bold mb-2 text-neutral-300">Enterprise BYOK</h3>
-                         <div className="text-4xl font-black mb-4">$49<span className="text-lg text-neutral-400 font-normal">/mo</span></div>
-                         <p className="text-neutral-400 mb-6">Bypass all restrictions using your own Google Cloud API Key.</p>
-                         <ul className="space-y-3 font-medium text-neutral-300">
-                           <li>• Unlimited Accounts</li>
-                           <li>• 100% Private (Your Key)</li>
-                           <li>• Priority Feature Access</li>
-                         </ul>
+                       
+                       <div className="border border-neutral-200 bg-white rounded-2xl p-8 shadow-xl relative overflow-hidden flex flex-col group hover:border-black transition-colors">
+                         <h3 className="text-neutral-500 font-semibold mb-2 uppercase tracking-wide text-xs">Early Adopter</h3>
+                         <div className="flex items-baseline gap-1 mb-4">
+                           <span className="text-5xl font-black text-black">$49</span>
+                           <span className="text-neutral-400 font-medium">USD</span>
+                         </div>
+                         <p className="text-sm text-neutral-500 mb-8 leading-relaxed">
+                           One-time payment for lifetime access. Use your own Google Cloud API key (BYOK) for unlimited usage.
+                         </p>
+                         
+                         <a href="https://gumroad.com" target="_blank" rel="noopener noreferrer" className="mt-auto py-3.5 px-6 bg-black hover:bg-neutral-800 text-white rounded-xl font-bold text-center transition-all shadow-md group-hover:shadow-lg flex items-center justify-center gap-2">
+                           Get Lifetime Access &rarr;
+                         </a>
                        </div>
                      </div>
                    </>
