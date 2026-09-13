@@ -12,6 +12,8 @@ interface SidebarProps {
   isAddingAccount: boolean;
   launchDeepWork: (urlTemplate: string, accountId: string) => void;
   handleLogoutAll: () => void;
+  isMobileMenuOpen?: boolean;
+  closeMobileMenu?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -23,10 +25,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
   handleLogin,
   isAddingAccount,
   launchDeepWork,
-  handleLogoutAll
+  handleLogoutAll,
+  isMobileMenuOpen = false,
+  closeMobileMenu = () => {}
 }) => {
   return (
-    <div className="hidden md:flex w-64 bg-neutral-900 text-white flex-col shrink-0">
+    <>
+      {/* Mobile Overlay */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={closeMobileMenu}
+        />
+      )}
+      <div className={`${isMobileMenuOpen ? 'fixed inset-y-0 left-0 z-50 flex shadow-2xl' : 'hidden'} md:relative md:flex w-64 bg-neutral-900 text-white flex-col shrink-0`}>
       <div className="h-16 flex items-center justify-between px-6 border-b border-neutral-800 shrink-0">
         <div className="flex items-center gap-3">
           <Layers className="w-5 h-5 text-blue-400" />
@@ -110,35 +122,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
         </div>
 
-        {/* Deep Work Launcher (Zone 4) */}
-        <div className="px-6">
-          <h2 className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-4">Zone 4: Deep Work Launcher</h2>
-          <div className="space-y-3">
-            {[
-              { name: 'Gemini', url: 'https://gemini.google.com/?authuser={{email}}' },
-              { name: 'NotebookLM', url: 'https://notebooklm.google.com/?authuser={{email}}' },
-              { name: 'Google AI Studio', url: 'https://aistudio.google.com/?authuser={{email}}' }
-            ].map(tool => (
-              <div key={tool.name} className="bg-neutral-800/50 border border-neutral-700/50 rounded-xl p-3">
-                <div className="text-xs font-semibold mb-2">{tool.name}</div>
-                <div className="flex gap-1 overflow-x-auto pb-1 hide-scrollbar">
-                  {accounts.map(acc => (
-                    <button 
-                      key={acc.id}
-                      onClick={() => launchDeepWork(tool.url, acc.id)}
-                      className="shrink-0 px-2.5 py-1.5 bg-neutral-700 hover:bg-blue-600 rounded-md text-[10px] font-medium flex items-center gap-1.5 transition-colors group"
-                      title={`Launch as ${acc.email}`}
-                    >
-                      {acc.photoURL && <img src={acc.photoURL} alt="" className="w-3.5 h-3.5 rounded-full" />}
-                      <ExternalLink size={10} className="opacity-50 group-hover:opacity-100" />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
       </div>
       
       <div className="p-6 border-t border-neutral-800">
@@ -147,5 +130,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
          </button>
       </div>
     </div>
+    </>
   );
 };

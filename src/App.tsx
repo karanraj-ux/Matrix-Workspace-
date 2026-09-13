@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, Search, Plus, CheckSquare, Square, Mail, FileText, Calendar, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard } from 'lucide-react';
+import { Layers, Search, Plus, CheckSquare, Square, Mail, FileText, Calendar, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard, Menu } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { logout } from './auth';
 
@@ -37,6 +37,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddingAccount, setIsAddingAccount] = useState(false);
   const [currentView, setCurrentView] = useState<'dashboard' | 'mail' | 'drive' | 'calendar' | 'settings'>('dashboard');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Settings & Upgrades
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
@@ -432,7 +433,7 @@ export default function App() {
       <div className="min-h-screen w-screen flex flex-col bg-neutral-50 text-neutral-900 font-sans">
         
         {/* Navbar */}
-        <header className="h-16 px-6 border-b border-neutral-200 bg-white flex items-center justify-between shrink-0">
+        <header className="sticky top-0 z-50 h-16 px-6 border-b border-neutral-200 bg-white flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center">
               <Layers className="w-4 h-4 text-white" />
@@ -525,8 +526,8 @@ export default function App() {
                  {activeStaticPage === 'about' && (
                    <>
                      <h1 className="text-4xl font-black mb-8">System Architecture</h1>
-                     <p className="text-neutral-600 mb-6">Matrix Workspace is a strictly client-side application designed to aggregate your Google services without relying on backend servers.</p>
-                     <p className="text-neutral-600 mb-6">By utilizing Google Identity Services (GSI) and IndexedDB, this application manages multiple OAuth tokens concurrently within your browser memory. This guarantees that your private emails, files, and calendar events are never transmitted to third-party databases.</p>
+                     <p className="text-neutral-600 mb-6">Matrix Workspace is a strictly client-side React boilerplate designed for developers to aggregate Google services without relying on backend servers.</p>
+                     <p className="text-neutral-600 mb-6">By utilizing Google Identity Services (GSI) and IndexedDB, this template manages multiple OAuth tokens concurrently within the browser memory. This guarantees that private emails, files, and calendar events are never transmitted to third-party databases, making it the perfect foundation for privacy-first SaaS products and internal tools.</p>
                    </>
                  )}
 
@@ -578,10 +579,10 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-neutral-100 font-sans text-neutral-900">
       
-      {/* LEFT SIDEBAR (Dark Mode Command Center) - Hidden on Mobile */}
+      {/* LEFT SIDEBAR (Dark Mode Command Center) - Hidden on Mobile unless menu is open */}
       <Sidebar 
         currentView={currentView}
-        setCurrentView={setCurrentView}
+        setCurrentView={(view) => { setCurrentView(view); setIsMobileMenuOpen(false); }}
         accounts={accounts}
         activeAccountIds={activeAccountIds}
         toggleAccountActive={toggleAccountActive}
@@ -589,13 +590,22 @@ export default function App() {
         isAddingAccount={isAddingAccount}
         launchDeepWork={launchDeepWork}
         handleLogoutAll={handleLogoutAll}
+        isMobileMenuOpen={isMobileMenuOpen}
+        closeMobileMenu={() => setIsMobileMenuOpen(false)}
       />
 
       {/* MAIN CONTENT */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-white">
         
         {/* Top Header (Global Search) */}
-        <div className="h-16 bg-white border-b border-neutral-200 px-6 flex items-center shrink-0">
+        <div className="h-16 bg-white border-b border-neutral-200 px-4 md:px-6 flex items-center gap-3 shrink-0">
+          <button 
+            className="md:hidden p-2 -ml-2 rounded-lg hover:bg-neutral-100 text-neutral-600"
+            onClick={() => setIsMobileMenuOpen(true)}
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          
           <div className="flex-1 max-w-3xl relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
             <input 
