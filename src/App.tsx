@@ -135,7 +135,7 @@ export default function App() {
     try {
       const client = (window as any).google.accounts.oauth2.initTokenClient({
         client_id: customClientId.trim(),
-        scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.readonly',
+        scope: 'email profile openid https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.readonly',
         prompt: 'consent select_account',
         callback: async (tokenResponse: any) => {
           if (tokenResponse.error) {
@@ -150,6 +150,12 @@ export default function App() {
              const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
                headers: { Authorization: `Bearer ${accessToken}` }
              });
+             
+             if (!userInfoRes.ok) {
+               const errText = await userInfoRes.text();
+               throw new Error(`Google UserInfo API Error (${userInfoRes.status}): ${errText}`);
+             }
+             
              const userInfo = await userInfoRes.json();
              
              if (!userInfo.sub) throw new Error("No user ID found in Google UserInfo");
