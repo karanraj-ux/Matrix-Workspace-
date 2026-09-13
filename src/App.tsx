@@ -630,6 +630,7 @@ export default function App() {
                 filteredEvents={filteredEvents}
                 handleLogin={handleLogin}
                 setCurrentView={setCurrentView}
+                openEmail={openEmail}
               />
             </div>
 

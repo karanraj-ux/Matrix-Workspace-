@@ -32,13 +32,13 @@ export const fetchGmailMessages = async (acc: AccountToken, handleTokenExpiry: (
     if (!data.messages) return [];
 
     const detailPromises = data.messages.map(async (msg: any) => {
-      const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`, {
+      const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=subject&metadataHeaders=From&metadataHeaders=from`, {
         headers: { Authorization: `Bearer ${acc.accessToken}` }
       });
       if (detailRes.status === 401) return null;
       const detail = await detailRes.json();
-      const subject = detail.payload?.headers?.find((h: any) => h.name === 'Subject')?.value || 'No Subject';
-      const from = detail.payload?.headers?.find((h: any) => h.name === 'From')?.value || 'Unknown Sender';
+      const subject = detail.payload?.headers?.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '(No Subject)';
+      const from = detail.payload?.headers?.find((h: any) => h.name.toLowerCase() === 'from')?.value || 'Unknown Sender';
       
       return {
         id: msg.id,

@@ -9,6 +9,7 @@ interface DashboardViewProps {
   filteredEvents: CalendarEvent[];
   handleLogin: (forceSelect?: boolean) => void;
   setCurrentView: (view: 'dashboard' | 'mail' | 'drive' | 'calendar' | 'settings') => void;
+  openEmail: (email: GmailMessage) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -17,7 +18,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   filteredFiles,
   filteredEvents,
   handleLogin,
-  setCurrentView
+  setCurrentView,
+  openEmail
 }) => {
   const expiredAccounts = accounts.filter(acc => acc.isExpired);
   
@@ -115,7 +117,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <div className="h-full flex items-center justify-center text-sm text-neutral-400">No recent emails</div>
                 ) : (
                   latestEmails.map(email => (
-                    <div key={email.id} className="p-3 bg-neutral-50 rounded-xl border border-neutral-100">
+                    <div 
+                      key={email.id} 
+                      onClick={() => {
+                        openEmail(email);
+                        setCurrentView('mail');
+                      }}
+                      className="p-3 bg-neutral-50 rounded-xl border border-neutral-100 cursor-pointer hover:border-blue-300 hover:bg-blue-50/50 transition-colors"
+                    >
                       <div className="text-xs text-neutral-500 mb-1 flex items-center gap-2 truncate">
                         <span className="truncate">{email.accountEmail}</span>
                       </div>
