@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, Search, Plus, CheckSquare, Square, Mail, FileText, Calendar, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard, Menu } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Zap, Layers, Search, Plus, CheckSquare, Square, Mail, FileText, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard, Menu } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { logout } from './auth';
 
-import { fetchDriveFiles, fetchGmailMessages, fetchCalendarEvents } from './services/googleService';
-import { AccountToken, GmailMessage, DriveFile, CalendarEvent } from './types';
+import { fetchDriveFiles, fetchGmailMessages, syncConfigToShadowDb, fetchConfigFromShadowDb } from './services/googleService';
+import { AccountToken, GmailMessage, DriveFile } from './types';
 
 import { Sidebar } from './components/Sidebar';
 import { UpgradeModal } from './components/UpgradeModal';
@@ -14,9 +15,13 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { MailView } from './views/MailView';
 import { DriveView } from './views/DriveView';
 import { SettingsView } from './views/SettingsView';
-import { CalendarView } from './views/CalendarView';
 import { DashboardView } from './views/DashboardView';
 import { useAccountPersistence } from './hooks/useAccountPersistence';
+import { ComposeModal } from './components/ComposeModal';
+import { SaveAttachmentModal } from './components/SaveAttachmentModal';
+import { GlobalSearchView } from './views/GlobalSearchView';
+import { AutomationView } from './views/AutomationView';
+import { executeAutomations } from './services/automationEngine';
 
 export default function App() {
   const {
@@ -33,11 +38,29 @@ export default function App() {
     clearStorageAndReset
   } = useAccountPersistence();
 
+  const [isComposeOpen, setIsComposeOpen] = useState(false);
+  const [replyToEmail, setReplyToEmail] = useState<GmailMessage | null>(null);
+  const [fileToAttach, setFileToAttach] = useState<DriveFile | null>(null);
+  const [attachmentToSave, setAttachmentToSave] = useState<{ email: GmailMessage, attachment: { attachmentId: string; filename: string; mimeType: string; size: number } } | null>(null);
+
   // App State
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddingAccount, setIsAddingAccount] = useState(false);
-  const [currentView, setCurrentView] = useState<'dashboard' | 'mail' | 'drive' | 'calendar' | 'settings'>('dashboard');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'mail' | 'drive' | 'settings' | 'automation'>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  
+  // Background Automation Runner
+  useEffect(() => {
+    const run = async () => {
+      if (activeAccountIds.size === 0) return;
+      const rules = await get('matrix_automation_rules') || [];
+      await executeAutomations(rules, accounts);
+    };
+    run();
+    const interval = setInterval(run, 60000); // Check every 60 seconds
+    return () => clearInterval(interval);
+  }, [accounts, activeAccountIds]);
 
   // Settings & Upgrades
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
@@ -56,7 +79,6 @@ export default function App() {
   // Phase 3 Streams
   const [aggregatedEmails, setAggregatedEmails] = useState<any[]>([]);
   const [aggregatedFiles, setAggregatedFiles] = useState<any[]>([]);
-  const [aggregatedEvents, setAggregatedEvents] = useState<any[]>([]);
   const [isLoadingStreams, setIsLoadingStreams] = useState(false);
 
   const handleTokenExpiry = (accountId: string) => {
@@ -68,31 +90,57 @@ export default function App() {
       if (activeAccountIds.size === 0) {
         setAggregatedEmails([]);
         setAggregatedFiles([]);
-        setAggregatedEvents([]);
         return;
       }
 
-      setIsLoadingStreams(true);
       const activeAccounts = accounts.filter(a => activeAccountIds.has(a.id));
 
+      // STEP 1: INSTANT HYDRATION (Local-First Speed)
+      // We read from the browser's IndexedDB to instantly paint the UI
       try {
-        const drivePromises = activeAccounts.map(acc => fetchDriveFiles(acc, handleTokenExpiry));
-        const gmailPromises = activeAccounts.map(acc => fetchGmailMessages(acc, handleTokenExpiry));
-        const calendarPromises = activeAccounts.map(acc => fetchCalendarEvents(acc, handleTokenExpiry));
+        const cachedEmails = [];
+        const cachedFiles = [];
+        
+        for (const acc of activeAccounts) {
+          const e = await get(`matrix_emails_${acc.id}`);
+          const f = await get(`matrix_files_${acc.id}`);
+          if (e) cachedEmails.push(...e);
+          if (f) cachedFiles.push(...f);
+        }
+        
+        if (cachedEmails.length > 0) setAggregatedEmails(cachedEmails.sort((a, b) => b.timestamp - a.timestamp));
+        if (cachedFiles.length > 0) setAggregatedFiles(cachedFiles.sort((a, b) => b.timestamp - a.timestamp));
+      } catch (e) {
+        console.warn("Failed to load from local cache", e);
+      }
 
-        const [driveResults, gmailResults, calendarResults] = await Promise.all([
+      // STEP 2: SILENT BACKGROUND SYNC
+      // We reach out to Google's servers to fetch the latest changes
+      setIsLoadingStreams(true);
+
+      try {
+        const drivePromises = activeAccounts.map(async acc => {
+          const res = await fetchDriveFiles(acc, handleTokenExpiry);
+          await set(`matrix_files_${acc.id}`, res).catch(() => {});
+          return res;
+        });
+        const gmailPromises = activeAccounts.map(async acc => {
+          const res = await fetchGmailMessages(acc, handleTokenExpiry);
+          await set(`matrix_emails_${acc.id}`, res).catch(() => {});
+          return res;
+        });
+
+        const [driveResults, gmailResults] = await Promise.all([
           Promise.all(drivePromises),
-          Promise.all(gmailPromises),
-          Promise.all(calendarPromises)
+          Promise.all(gmailPromises)
         ]);
 
         const flatDrive = driveResults.flat().sort((a, b) => b.timestamp - a.timestamp);
         const flatGmail = gmailResults.flat().sort((a, b) => b.timestamp - a.timestamp);
-        const flatCalendar = calendarResults.flat().sort((a, b) => a.timestamp - b.timestamp); // Ascending for upcoming events
 
+        // STEP 3: SEAMLESS STATE SWAP
         setAggregatedFiles(flatDrive);
         setAggregatedEmails(flatGmail);
-        setAggregatedEvents(flatCalendar);
       } catch (error) {
         console.error("Error fetching streams:", error);
       } finally {
@@ -102,6 +150,31 @@ export default function App() {
 
     fetchStreams();
   }, [activeAccountIds, accounts]);
+
+  // Phase 4: The Shadow Database - Push Sync
+  useEffect(() => {
+    if (accounts.length > 0 && !accounts[0].isExpired && !isInitializing) {
+      const masterToken = accounts[0].accessToken;
+      
+      const configToSync = {
+        accounts: accounts.map(a => ({
+           id: a.id,
+           email: a.email,
+           name: a.name,
+           photoURL: a.photoURL,
+           isExpired: true // Forces re-auth when downloaded on new device
+        })),
+        activeAccountIds: Array.from(activeAccountIds),
+        currentView: currentView
+      };
+      
+      const timer = setTimeout(() => {
+         syncConfigToShadowDb(masterToken, configToSync);
+      }, 2000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [accounts, activeAccountIds, currentView, isInitializing]);
 
   const handleLogin = async (forceSelect = false) => {
     try {
@@ -136,7 +209,7 @@ export default function App() {
     try {
       const client = (window as any).google.accounts.oauth2.initTokenClient({
         client_id: customClientId.trim(),
-        scope: 'email profile openid https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.readonly',
+        scope: 'email profile openid https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send',
         prompt: 'consent select_account',
         callback: async (tokenResponse: any) => {
           if (tokenResponse.error) {
@@ -169,6 +242,8 @@ export default function App() {
                accessToken: accessToken
              };
 
+             const isFirstAccount = accounts.length === 0;
+
              setAccounts(prev => {
                 if (prev.find(a => a.id === newAccount.id)) {
                   return prev.map(a => a.id === newAccount.id ? newAccount : a);
@@ -176,6 +251,29 @@ export default function App() {
                 return [...prev, newAccount];
              });
              setActiveAccountIds(prev => new Set(prev).add(newAccount.id));
+
+             if (isFirstAccount) {
+                try {
+                  const shadowConfig = await fetchConfigFromShadowDb(accessToken);
+                  if (shadowConfig) {
+                    if (shadowConfig.accounts && Array.isArray(shadowConfig.accounts)) {
+                      setAccounts(prev => {
+                        const existingIds = new Set(prev.map(a => a.id));
+                        const missingAccounts = shadowConfig.accounts.filter((a: any) => !existingIds.has(a.id));
+                        return [...prev, ...missingAccounts];
+                      });
+                    }
+                    if (shadowConfig.activeAccountIds && Array.isArray(shadowConfig.activeAccountIds)) {
+                      setActiveAccountIds(prev => new Set([...prev, ...shadowConfig.activeAccountIds]));
+                    }
+                    if (shadowConfig.currentView) {
+                      setCurrentView(shadowConfig.currentView);
+                    }
+                  }
+                } catch (e) {
+                  console.error("Shadow DB hydration failed", e);
+                }
+             }
 
           } catch (e) {
              console.error("Failed to fetch user info for BYOK", e);
@@ -207,7 +305,6 @@ export default function App() {
       await logout();
       await clearStorageAndReset();
       setAggregatedEmails([]);
-      setAggregatedEvents([]);
       setAggregatedFiles([]);
       setCurrentView('mail');
     } catch (e) {
@@ -222,20 +319,8 @@ export default function App() {
     window.open(url, '_blank');
   };
 
-  const q = searchQuery.toLowerCase();
-  const filteredEmails = aggregatedEmails.filter(e => 
-    (e.subject || '').toLowerCase().includes(q) || 
-    (e.from || '').toLowerCase().includes(q) || 
-    (e.snippet || '').toLowerCase().includes(q)
-  );
-  
-  const filteredFiles = aggregatedFiles.filter(f => 
-    (f.name || '').toLowerCase().includes(q)
-  );
-  
-  const filteredEvents = aggregatedEvents.filter(e => 
-    (e.summary || '').toLowerCase().includes(q)
-  );
+  const filteredEmails = aggregatedEmails;
+  const filteredFiles = aggregatedFiles;
 
   const decodeBase64 = (encoded: string) => {
     try {
@@ -243,6 +328,29 @@ export default function App() {
     } catch (e) {
       return atob(encoded.replace(/-/g, '+').replace(/_/g, '/'));
     }
+  };
+
+  const extractAttachments = (payload: any) => {
+    const attachments: { attachmentId: string; filename: string; mimeType: string; size: number }[] = [];
+    const searchParts = (parts: any[]) => {
+      parts.forEach(part => {
+        if (part.filename && part.body && part.body.attachmentId) {
+          attachments.push({
+            attachmentId: part.body.attachmentId,
+            filename: part.filename,
+            mimeType: part.mimeType,
+            size: part.body.size || 0
+          });
+        }
+        if (part.parts) {
+          searchParts(part.parts);
+        }
+      });
+    };
+    if (payload.parts) {
+      searchParts(payload.parts);
+    }
+    return attachments;
   };
 
   const extractEmailBody = (payload: any): string => {
@@ -280,6 +388,10 @@ export default function App() {
       });
       const data = await res.json();
       const content = extractEmailBody(data.payload);
+      const attachments = extractAttachments(data.payload);
+      
+      // Update active email with attachments
+      setActiveEmail({ ...email, attachments });
       
       // Inject some basic styles to prevent body overflow weirdness inside iframe
       const styledContent = `
@@ -404,6 +516,25 @@ export default function App() {
     }
   };
 
+  const handleAddMultiCloudAccount = (account: AccountToken) => {
+    setAccounts(prev => {
+      if (prev.find(a => a.id === account.id)) {
+        return prev.map(a => a.id === account.id ? account : a);
+      }
+      return [...prev, account];
+    });
+    setActiveAccountIds(prev => new Set(prev).add(account.id));
+  };
+
+  const handleRemoveAccount = (id: string) => {
+    setAccounts(prev => prev.filter(a => a.id !== id));
+    setActiveAccountIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
   if (isInitializing) {
     return <div className="h-screen w-screen bg-neutral-900 flex items-center justify-center text-white"><Loader2 className="animate-spin w-8 h-8 text-neutral-400" /></div>;
   }
@@ -419,7 +550,7 @@ export default function App() {
           <p className="text-sm text-neutral-400 mb-6">{hydrationError}</p>
           <button 
             onClick={clearStorageAndReset}
-            className="w-full py-3 px-4 bg-white text-black font-bold rounded-xl hover:bg-neutral-200 transition-colors"
+            className="w-full py-3 px-4 bg-[#0a0a0a] text-white font-bold rounded-xl hover:bg-white/20 transition-colors"
           >
             Clear Data & Re-Authenticate
           </button>
@@ -430,19 +561,19 @@ export default function App() {
 
   if (accounts.length === 0 && currentView !== 'settings') {
     return (
-      <div className="min-h-screen w-screen flex flex-col bg-neutral-50 text-neutral-900 font-sans">
+      <div className="min-h-screen w-screen flex flex-col bg-[#111111] text-white font-sans">
         
         {/* Navbar */}
-        <header className="sticky top-0 z-50 h-16 px-6 border-b border-neutral-200 bg-white flex items-center justify-between shrink-0">
+        <header className="sticky top-0 z-50 h-16 px-6 border-b border-white/10 bg-[#0a0a0a] flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
               <Layers className="w-4 h-4 text-white" />
             </div>
             <span className="font-bold tracking-tight">Matrix Workspace</span>
           </div>
           <div className="flex items-center gap-4 text-sm font-medium text-neutral-500">
-            <button onClick={() => setActiveStaticPage('about')} className="hover:text-black transition-colors hidden sm:block">Architecture</button>
-            <button onClick={() => setActiveStaticPage('pricing')} className="bg-black hover:bg-neutral-800 text-white px-4 py-1.5 rounded-full transition-colors font-bold text-xs flex items-center gap-2">
+            <button onClick={() => setActiveStaticPage('about')} className="hover:text-white transition-colors hidden sm:block">Architecture</button>
+            <button onClick={() => setActiveStaticPage('pricing')} className="bg-white hover:bg-neutral-800 text-white px-4 py-1.5 rounded-full transition-colors font-bold text-xs flex items-center gap-2">
               Get Lifetime Access
             </button>
           </div>
@@ -451,23 +582,23 @@ export default function App() {
         {/* Hero Section */}
         <main className="flex-1 flex flex-col items-center justify-center p-6 text-center">
           <div className="max-w-2xl mx-auto space-y-8">
-            <div className="w-16 h-16 bg-neutral-100 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-neutral-200">
-               <Layers className="w-8 h-8 text-neutral-800" />
+            <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-white/10">
+               <Layers className="w-8 h-8 text-neutral-200" />
             </div>
             
-            <h1 className="text-4xl md:text-5xl font-black tracking-tight leading-[1.1] text-neutral-900">
+            <h1 className="text-4xl md:text-5xl font-black tracking-tight leading-[1.1] text-white">
               Unified Workspace
             </h1>
             
             <p className="text-lg text-neutral-500 max-w-xl mx-auto leading-relaxed">
-              Connect your Google accounts to access Mail, Calendar, and Drive in a single secure, client-side dashboard. 
+              Connect your Google, OneDrive, and Dropbox accounts to access Mail, Distributed Drive, and Automations in a single secure, client-side dashboard. 
             </p>
             
             <div className="pt-6 flex flex-col items-center gap-4">
               <button 
                 onClick={() => handleLogin(false)}
                 disabled={isAddingAccount}
-                className="py-3.5 px-8 bg-black hover:bg-neutral-800 text-white rounded-xl font-bold text-base transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-3 disabled:opacity-70 disabled:hover:translate-y-0 w-full md:w-auto"
+                className="py-3.5 px-8 bg-white hover:bg-neutral-800 text-white rounded-xl font-bold text-base transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-3 disabled:opacity-70 disabled:hover:translate-y-0 w-full md:w-auto"
               >
                 {isAddingAccount ? <Loader2 className="animate-spin w-5 h-5" /> : 'Connect Google Account'}
               </button>
@@ -480,22 +611,22 @@ export default function App() {
         </main>
 
         {/* Footer */}
-        <footer className="py-8 border-t border-neutral-200 bg-white mt-auto">
+        <footer className="py-8 border-t border-white/10 bg-[#0a0a0a] mt-auto">
           <div className="max-w-5xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4">
             <div className="text-sm text-neutral-500 font-medium">© 2026 Matrix Workspace. Built for power users.</div>
             <div className="flex gap-6 text-sm text-neutral-500 font-medium">
-              <button onClick={() => setActiveStaticPage('privacy')} className="hover:text-black transition-colors">Privacy Policy</button>
-              <button onClick={() => setActiveStaticPage('terms')} className="hover:text-black transition-colors">Terms of Service</button>
-              <a href="mailto:kr378434@gmail.com" className="hover:text-black transition-colors">Contact</a>
+              <button onClick={() => setActiveStaticPage('privacy')} className="hover:text-white transition-colors">Privacy Policy</button>
+              <button onClick={() => setActiveStaticPage('terms')} className="hover:text-white transition-colors">Terms of Service</button>
+              <a href="mailto:kr378434@gmail.com" className="hover:text-white transition-colors">Contact</a>
             </div>
           </div>
         </footer>
 
         {/* Static Page Modals overlay over the landing page */}
         {activeStaticPage && (
-          <div className="fixed inset-0 z-50 bg-white overflow-y-auto animate-in slide-in-from-bottom-8">
+          <div className="fixed inset-0 z-50 bg-[#0a0a0a] overflow-y-auto animate-in slide-in-from-bottom-8">
              <div className="max-w-3xl mx-auto p-8 md:p-12 relative">
-               <button onClick={() => setActiveStaticPage(null)} className="fixed top-6 right-6 p-3 bg-neutral-100 hover:bg-neutral-200 rounded-full transition-colors z-10">
+               <button onClick={() => setActiveStaticPage(null)} className="fixed top-6 right-6 p-3 bg-white/5 hover:bg-white/20 rounded-full transition-colors z-10">
                  <X className="w-5 h-5" />
                </button>
                
@@ -503,65 +634,65 @@ export default function App() {
                  {activeStaticPage === 'privacy' && (
                    <>
                      <h1 className="text-4xl font-black mb-8">Privacy Policy</h1>
-                     <p className="lead text-xl text-neutral-600 mb-8">Your data never leaves your browser.</p>
+                     <p className="lead text-xl text-neutral-400 mb-8">Your data never leaves your browser.</p>
                      
                      <h3 className="text-2xl font-bold mt-8 mb-4">1. Zero-Server Architecture</h3>
-                     <p className="text-neutral-600 mb-6">Matrix Workspace is built on a strictly local, serverless architecture. We do not operate backend servers, databases, or analytics trackers that collect your email content, calendar events, or Drive files. All OAuth tokens and aggregated data are stored exclusively in your browser's local storage (IndexedDB).</p>
+                     <p className="text-neutral-400 mb-6">Matrix Workspace is built on a strictly local, serverless architecture. We do not operate backend servers, databases, or analytics trackers that collect your email content, or Drive files. All OAuth tokens and aggregated data are stored exclusively in your browser's local storage (IndexedDB).</p>
                      
                      <h3 className="text-2xl font-bold mt-8 mb-4">2. Google API Services Usage</h3>
-                     <p className="text-neutral-600 mb-6">Our application requests read-only access to your Gmail and Calendar, and full access to your Google Drive (strictly to enable the Cross-Account Magic Transfer feature). We do not transmit this data to any third party. The data flows directly from Google's servers to your local machine.</p>
+                     <p className="text-neutral-400 mb-6">Our application requests read-only access to your Gmail, and full access to your Google Drive (strictly to enable the Cross-Account Magic Transfer feature). We do not transmit this data to any third party. The data flows directly from Google's servers to your local machine.</p>
 
                      <h3 className="text-2xl font-bold mt-8 mb-4">3. Enterprise BYOK (Bring Your Own Key)</h3>
-                     <p className="text-neutral-600 mb-6">Users who opt into the Enterprise BYOK program utilize their own Google Cloud Credentials. In this mode, Matrix Workspace acts purely as a client-side interface framework, and you maintain complete administrative control over the API quotas and security logs within your own Google Cloud Console.</p>
+                     <p className="text-neutral-400 mb-6">Users who opt into the Enterprise BYOK program utilize their own Google Cloud Credentials. In this mode, Matrix Workspace acts purely as a client-side interface framework, and you maintain complete administrative control over the API quotas and security logs within your own Google Cloud Console.</p>
                    </>
                  )}
                  
                  {activeStaticPage === 'terms' && (
                    <>
                      <h1 className="text-4xl font-black mb-8">Terms of Service</h1>
-                     <p className="text-neutral-600 mb-6">By using Matrix Workspace, you agree to these terms. This is a beta utility provided "as is" without warranty. We are not responsible for accidental data deletion or file misrouting caused by user error during cross-account transfers.</p>
+                     <p className="text-neutral-400 mb-6">By using Matrix Workspace, you agree to these terms. This is a beta utility provided "as is" without warranty. We are not responsible for accidental data deletion or file misrouting caused by user error during cross-account transfers.</p>
                    </>
                  )}
 
                  {activeStaticPage === 'about' && (
                    <>
                      <h1 className="text-4xl font-black mb-8">System Architecture</h1>
-                     <p className="text-neutral-600 mb-6">Matrix Workspace is a strictly client-side React boilerplate designed for developers to aggregate Google services without relying on backend servers.</p>
-                     <p className="text-neutral-600 mb-6">By utilizing Google Identity Services (GSI) and IndexedDB, this template manages multiple OAuth tokens concurrently within the browser memory. This guarantees that private emails, files, and calendar events are never transmitted to third-party databases, making it the perfect foundation for privacy-first SaaS products and internal tools.</p>
+                     <p className="text-neutral-400 mb-6">Matrix Workspace is a strictly client-side React boilerplate designed for developers to aggregate Google services without relying on backend servers.</p>
+                     <p className="text-neutral-400 mb-6">By utilizing Google Identity Services (GSI) and IndexedDB, this template manages multiple OAuth tokens concurrently within the browser memory. This guarantees that private emails and files are never transmitted to third-party databases, making it the perfect foundation for privacy-first SaaS products and internal tools.</p>
                    </>
                  )}
 
                  {activeStaticPage === 'pricing' && (
                    <>
                      <h1 className="text-4xl font-black mb-6">Unlock Matrix Workspace.</h1>
-                     <p className="text-xl text-neutral-600 mb-10 leading-relaxed">
-                       Stop logging in and out of different Chrome profiles. Aggregate all your client inboxes, calendars, and files into a single, secure dashboard.
+                     <p className="text-xl text-neutral-400 mb-10 leading-relaxed">
+                       Stop logging in and out of different Chrome profiles. Aggregate all your client inboxes and files into a single, secure dashboard.
                      </p>
                      
                      <div className="grid md:grid-cols-2 gap-8">
-                       <div className="border border-neutral-200 bg-neutral-50 rounded-2xl p-8 flex flex-col shadow-sm">
-                         <h3 className="text-lg font-bold mb-6 flex items-center gap-2 text-neutral-900">
+                       <div className="border border-white/10 bg-[#111111] rounded-2xl p-8 flex flex-col shadow-sm">
+                         <h3 className="text-lg font-bold mb-6 flex items-center gap-2 text-white">
                            <Layers className="w-5 h-5 text-neutral-500" /> What's included?
                          </h3>
-                         <ul className="space-y-4 text-sm font-medium text-neutral-600 flex-1">
-                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-neutral-900 shrink-0 mt-0.5" /> <span><strong>Unified Inbox.</strong> Read emails from up to 5 accounts at once.</span></li>
-                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-neutral-900 shrink-0 mt-0.5" /> <span><strong>Zero-Server File Transfers.</strong> Move files between Google Drives seamlessly.</span></li>
-                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-neutral-900 shrink-0 mt-0.5" /> <span><strong>Merged Calendar.</strong> View all your appointments in one secure timeline.</span></li>
-                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-neutral-900 shrink-0 mt-0.5" /> <span><strong>100% Client-Side Privacy.</strong> Your data never touches our servers.</span></li>
+                         <ul className="space-y-4 text-sm font-medium text-neutral-400 flex-1">
+                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" /> <span><strong>Unified Inbox.</strong> Read emails from up to 5 accounts at once.</span></li>
+                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" /> <span><strong>Zero-Server File Transfers.</strong> Move files between Google Drives seamlessly.</span></li>
+                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" /> <span><strong>Multi-Cloud Storage.</strong> Stripe & encrypt across Google, OneDrive, Dropbox.</span></li>
+                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" /> <span><strong>100% Client-Side Privacy.</strong> Your data never touches our servers.</span></li>
                          </ul>
                        </div>
                        
-                       <div className="border border-neutral-200 bg-white rounded-2xl p-8 shadow-xl relative overflow-hidden flex flex-col group hover:border-black transition-colors">
+                       <div className="border border-white/10 bg-[#0a0a0a] rounded-2xl p-8 shadow-xl relative overflow-hidden flex flex-col group hover:border-black transition-colors">
                          <h3 className="text-neutral-500 font-semibold mb-2 uppercase tracking-wide text-xs">Early Adopter</h3>
                          <div className="flex items-baseline gap-1 mb-4">
-                           <span className="text-5xl font-black text-black">$49</span>
+                           <span className="text-5xl font-black text-white">$49</span>
                            <span className="text-neutral-400 font-medium">USD</span>
                          </div>
                          <p className="text-sm text-neutral-500 mb-8 leading-relaxed">
                            One-time payment for lifetime access. Use your own Google Cloud API key (BYOK) for unlimited usage.
                          </p>
                          
-                         <a href="https://gumroad.com" target="_blank" rel="noopener noreferrer" className="mt-auto py-3.5 px-6 bg-black hover:bg-neutral-800 text-white rounded-xl font-bold text-center transition-all shadow-md group-hover:shadow-lg flex items-center justify-center gap-2">
+                         <a href="https://gumroad.com" target="_blank" rel="noopener noreferrer" className="mt-auto py-3.5 px-6 bg-white hover:bg-neutral-800 text-white rounded-xl font-bold text-center transition-all shadow-md group-hover:shadow-lg flex items-center justify-center gap-2">
                            Get Lifetime Access &rarr;
                          </a>
                        </div>
@@ -577,9 +708,9 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen w-screen flex overflow-hidden bg-neutral-100 font-sans text-neutral-900">
+    <div className="h-screen w-screen flex overflow-hidden bg-[#F8FAFC] font-sans text-slate-900">
       
-      {/* LEFT SIDEBAR (Dark Mode Command Center) - Hidden on Mobile unless menu is open */}
+      {/* LEFT SIDEBAR - Command Center */}
       <Sidebar 
         currentView={currentView}
         setCurrentView={(view) => { setCurrentView(view); setIsMobileMenuOpen(false); }}
@@ -592,154 +723,201 @@ export default function App() {
         handleLogoutAll={handleLogoutAll}
         isMobileMenuOpen={isMobileMenuOpen}
         closeMobileMenu={() => setIsMobileMenuOpen(false)}
+        onCompose={() => {
+          setReplyToEmail(null);
+          setIsComposeOpen(true);
+        }}
+        onAddMultiCloudAccount={() => setCurrentView('settings')}
       />
 
       {/* MAIN CONTENT */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-white">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#F8FAFC]">
         
-        {/* Top Header (Global Search) */}
-        <div className="h-16 bg-white border-b border-neutral-200 px-4 md:px-6 flex items-center gap-3 shrink-0">
-          <button 
-            className="md:hidden p-2 -ml-2 rounded-lg hover:bg-neutral-100 text-neutral-600"
-            onClick={() => setIsMobileMenuOpen(true)}
-          >
-            <Menu className="w-5 h-5" />
-          </button>
-          
-          <div className="flex-1 max-w-3xl relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
-            <input 
-              type="text" 
-              placeholder="Search across all connected accounts..." 
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-neutral-100 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all outline-none"
-            />
+        {/* Top Header (Global Search & Actions) */}
+        <div className="h-16 bg-white border-b border-slate-200/80 px-4 md:px-6 flex items-center justify-between gap-3 shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+          <div className="flex items-center gap-3 flex-1 max-w-2xl">
+            <button 
+              className="md:hidden p-2 -ml-2 rounded-lg hover:bg-slate-100 text-slate-600"
+              onClick={() => setIsMobileMenuOpen(true)}
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            
+            <div className="flex-1 relative">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input 
+                type="text" 
+                placeholder="Search messages & files across accounts... (Press ⌘K)" 
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200/90 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200/80 text-[11px] font-medium text-slate-600">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>Zero-Server Mode</span>
+            </div>
           </div>
         </div>
 
         {/* Dynamic Views */}
-        <div className="flex-1 overflow-hidden flex flex-col min-h-0 relative">
+        <div className="flex-1 overflow-hidden flex flex-col min-h-0 relative bg-[#F8FAFC]">
+          
           <ErrorBoundary>
-            {/* Dashboard View */}
-            <div className={`absolute inset-0 bg-neutral-50 flex-col overflow-y-auto ${currentView === 'dashboard' ? 'flex' : 'hidden'}`}>
-              <DashboardView 
-                accounts={accounts}
-                filteredEmails={filteredEmails}
-                filteredFiles={filteredFiles}
-                filteredEvents={filteredEvents}
-                handleLogin={handleLogin}
-                setCurrentView={setCurrentView}
+              <GlobalSearchView 
+                query={searchQuery}
+                accounts={accounts.filter(a => activeAccountIds.has(a.id))}
+                onClose={() => setSearchQuery('')}
                 openEmail={openEmail}
+                onClearQuery={() => setSearchQuery('')}
               />
-            </div>
+            <AnimatePresence mode="wait">
 
-            {/* Mail View */}
-            <div className={`absolute inset-0 bg-white flex ${currentView === 'mail' ? 'block' : 'hidden'}`}>
-              <MailView 
-                activeAccountIds={activeAccountIds}
-                isLoadingStreams={isLoadingStreams}
-                filteredEmails={filteredEmails}
-                activeEmail={activeEmail}
-                openEmail={openEmail}
-                setActiveEmail={setActiveEmail}
-                executeEmailAction={executeEmailAction}
-                isEmailLoading={isEmailLoading}
-                emailHtml={emailHtml}
-              />
-            </div>
 
-            {/* Drive View */}
-            <div className={`absolute inset-0 bg-neutral-50 flex-col overflow-y-auto ${currentView === 'drive' ? 'flex' : 'hidden'}`}>
-              <DriveView 
-                activeAccountIds={activeAccountIds}
-                isLoadingStreams={isLoadingStreams}
-                filteredFiles={filteredFiles}
-                setTransferFile={setTransferFile}
-              />
-            </div>
-
-            {/* Settings View (BYOK) */}
-            <div className={`absolute inset-0 bg-neutral-50 flex-col overflow-y-auto ${currentView === 'settings' ? 'flex' : 'hidden'}`}>
-              <SettingsView 
-                isByokMode={isByokMode}
-                setIsByokMode={setIsByokMode}
-                customClientId={customClientId}
-                setCustomClientId={setCustomClientId}
-                handleLogin={handleLogin}
-              />
-            </div>
-
-            {/* Calendar View */}
-            <div className={`absolute inset-0 bg-neutral-50 flex-col overflow-y-auto ${currentView === 'calendar' ? 'flex' : 'hidden'}`}>
-              <CalendarView 
-                activeAccountIds={activeAccountIds}
-                isLoadingStreams={isLoadingStreams}
-                filteredEvents={filteredEvents}
-              />
-            </div>
+              <motion.div
+                key={currentView}
+                initial={{ opacity: 0, y: 10, scale: 0.995 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.995 }}
+                transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
+                className="absolute inset-0 flex flex-col overflow-hidden bg-[#F8FAFC]"
+              >
+                {currentView === 'dashboard' && (
+                  <div className="absolute inset-0 bg-[#F8FAFC] flex-col overflow-y-auto flex">
+                    <DashboardView 
+                      accounts={accounts}
+                      filteredEmails={filteredEmails}
+                      filteredFiles={filteredFiles}
+                      handleLogin={handleLogin}
+                      setCurrentView={setCurrentView}
+                      openEmail={openEmail}
+                    />
+                  </div>
+                )}
+                {currentView === 'mail' && (
+                  <div className="absolute inset-0 bg-[#F8FAFC] flex">
+                    <MailView 
+                      activeAccountIds={activeAccountIds}
+                      isLoadingStreams={isLoadingStreams}
+                      filteredEmails={filteredEmails}
+                      activeEmail={activeEmail}
+                      openEmail={openEmail}
+                      setActiveEmail={setActiveEmail}
+                      executeEmailAction={executeEmailAction}
+                      isEmailLoading={isEmailLoading}
+                      emailHtml={emailHtml}
+                      onReply={(email) => {
+                        setReplyToEmail(email);
+                        setIsComposeOpen(true);
+                      }}
+                      onSaveAttachmentToDrive={(email, attachment) => {
+                        setAttachmentToSave({ email, attachment });
+                      }}
+                    />
+                  </div>
+                )}
+                {currentView === 'drive' && (
+                  <div className="absolute inset-0 bg-[#F8FAFC] flex-col overflow-y-auto flex">
+                    <DriveView 
+                      accounts={accounts}
+                      activeAccountIds={activeAccountIds}
+                      isLoadingStreams={isLoadingStreams}
+                      filteredFiles={filteredFiles}
+                      setTransferFile={setTransferFile}
+                      onAttachToEmail={(file) => {
+                        setFileToAttach(file);
+                        setReplyToEmail(null);
+                        setIsComposeOpen(true);
+                      }}
+                    />
+                  </div>
+                )}
+                {currentView === 'settings' && (
+                  <div className="absolute inset-0 bg-[#F8FAFC] flex-col overflow-y-auto flex">
+                    <SettingsView 
+                      isByokMode={isByokMode}
+                      setIsByokMode={setIsByokMode}
+                      customClientId={customClientId}
+                      setCustomClientId={setCustomClientId}
+                      handleLogin={handleLogin}
+                      accounts={accounts}
+                      onAddMultiCloudAccount={handleAddMultiCloudAccount}
+                      onRemoveAccount={handleRemoveAccount}
+                    />
+                  </div>
+                )}
+                
+                {currentView === 'automation' && (
+                  <div className="absolute inset-0 bg-[#F8FAFC] flex-col overflow-y-auto flex">
+                    <AutomationView accounts={accounts} />
+                  </div>
+                )}
+              </motion.div>
+            </AnimatePresence>
           </ErrorBoundary>
         </div>
 
         {/* MOBILE BOTTOM NAVIGATION */}
-        <div className="md:hidden h-16 bg-white border-t border-neutral-200 flex items-center justify-around shrink-0 px-2 pb-safe z-50">
+        <div className="md:hidden h-16 bg-white border-t border-slate-200 flex items-center justify-around shrink-0 px-2 pb-safe z-50 shadow-xs">
           <button 
             onClick={() => setCurrentView('dashboard')}
-            className={`flex flex-col items-center justify-center w-full h-full gap-1 ${currentView === 'dashboard' ? 'text-indigo-600' : 'text-neutral-400'}`}
+            className={`flex flex-col items-center justify-center w-full h-full gap-1 ${currentView === 'dashboard' ? 'text-blue-600 font-semibold' : 'text-slate-400'}`}
           >
             <LayoutDashboard className="w-5 h-5" />
-            <span className="text-[10px] font-medium">Home</span>
+            <span className="text-[10px]">Home</span>
           </button>
           <button 
             onClick={() => setCurrentView('mail')}
-            className={`flex flex-col items-center justify-center w-full h-full gap-1 ${currentView === 'mail' ? 'text-blue-600' : 'text-neutral-400'}`}
+            className={`flex flex-col items-center justify-center w-full h-full gap-1 ${currentView === 'mail' ? 'text-blue-600 font-semibold' : 'text-slate-400'}`}
           >
             <Mail className="w-5 h-5" />
-            <span className="text-[10px] font-medium">Mail</span>
+            <span className="text-[10px]">Mail</span>
           </button>
           <button 
             onClick={() => setCurrentView('drive')}
-            className={`flex flex-col items-center justify-center w-full h-full gap-1 ${currentView === 'drive' ? 'text-green-600' : 'text-neutral-400'}`}
+            className={`flex flex-col items-center justify-center w-full h-full gap-1 ${currentView === 'drive' ? 'text-emerald-600 font-semibold' : 'text-slate-400'}`}
           >
             <FileText className="w-5 h-5" />
-            <span className="text-[10px] font-medium">Drive</span>
+            <span className="text-[10px]">Drive</span>
           </button>
           <button 
-            onClick={() => setCurrentView('calendar')}
-            className={`flex flex-col items-center justify-center w-full h-full gap-1 ${currentView === 'calendar' ? 'text-purple-600' : 'text-neutral-400'}`}
+            onClick={() => setCurrentView('automation')}
+            className={`flex flex-col items-center justify-center w-full h-full gap-1 ${currentView === 'automation' ? 'text-amber-600 font-semibold' : 'text-slate-400'}`}
           >
-            <Calendar className="w-5 h-5" />
-            <span className="text-[10px] font-medium">Agenda</span>
+            <Zap className="w-5 h-5" />
+            <span className="text-[10px]">Auto</span>
           </button>
-          {/* Mobile Accounts Toggle */}
           <button 
             onClick={() => document.getElementById('mobile-accounts-drawer')?.classList.toggle('hidden')}
-            className="flex flex-col items-center justify-center w-full h-full gap-1 text-neutral-400"
+            className="flex flex-col items-center justify-center w-full h-full gap-1 text-slate-400"
           >
             <Layers className="w-5 h-5" />
-            <span className="text-[10px] font-medium">Accounts</span>
+            <span className="text-[10px]">Accounts</span>
           </button>
         </div>
 
-        {/* Mobile Accounts Drawer (Simple Overlay) */}
-        <div id="mobile-accounts-drawer" className="hidden md:hidden absolute inset-0 z-50 bg-neutral-900/50 backdrop-blur-sm flex flex-col justify-end">
-          <div className="bg-white rounded-t-2xl p-6 max-h-[80vh] overflow-y-auto">
+        {/* Mobile Accounts Drawer */}
+        <div id="mobile-accounts-drawer" className="hidden md:hidden absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex flex-col justify-end">
+          <div className="bg-white rounded-t-2xl p-6 max-h-[80vh] overflow-y-auto border-t border-slate-200 shadow-2xl">
             <div className="flex justify-between items-center mb-6">
-              <h3 className="font-bold">Active Accounts</h3>
-              <button onClick={() => document.getElementById('mobile-accounts-drawer')?.classList.add('hidden')} className="text-sm font-medium text-neutral-500">Done</button>
+              <h3 className="font-bold text-slate-900 text-sm">Active Accounts</h3>
+              <button onClick={() => document.getElementById('mobile-accounts-drawer')?.classList.add('hidden')} className="text-xs font-semibold text-slate-500">Done</button>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-2">
               {accounts.map(acc => {
                 const isActive = activeAccountIds.has(acc.id);
                 return (
-                  <div key={acc.id} onClick={() => toggleAccountActive(acc.id)} className="flex items-center gap-3 p-3 rounded-xl border border-neutral-100 bg-neutral-50 cursor-pointer">
+                  <div key={acc.id} onClick={() => toggleAccountActive(acc.id)} className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
                     <div className="shrink-0">
-                      {isActive ? <CheckSquare size={18} className="text-blue-500" /> : <Square size={18} className="text-neutral-400" />}
+                      {isActive ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} className="text-slate-400" />}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className={`text-sm truncate font-medium ${isActive ? 'text-neutral-900' : 'text-neutral-500'}`}>{acc.email}</div>
+                      <div className={`text-xs truncate font-medium ${isActive ? 'text-slate-900' : 'text-slate-500'}`}>{acc.email}</div>
                     </div>
-                    {acc.photoURL && <img src={acc.photoURL} alt="" className={`w-6 h-6 rounded-full shrink-0 ${isActive ? 'opacity-100' : 'opacity-40'}`} />}
+                    {acc.photoURL && <img src={acc.photoURL} alt="" className={`w-5 h-5 rounded-full shrink-0 ${isActive ? 'opacity-100' : 'opacity-40'}`} />}
                   </div>
                 );
               })}
@@ -747,18 +925,18 @@ export default function App() {
             <button 
               onClick={() => handleLogin(true)}
               disabled={isAddingAccount}
-              className="mt-6 w-full py-3 bg-neutral-900 text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+              className="mt-5 w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
             >
-              {isAddingAccount ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Add Another Account
+              {isAddingAccount ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add Another Account
             </button>
             <button 
               onClick={() => {
                 setCurrentView('settings');
                 document.getElementById('mobile-accounts-drawer')?.classList.add('hidden');
               }}
-              className="mt-3 w-full py-3 bg-neutral-100 text-neutral-700 hover:bg-neutral-200 rounded-xl text-sm font-medium flex items-center justify-center gap-2"
+              className="mt-2.5 w-full py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
             >
-              <Layers size={16} /> Security & Settings (BYOK)
+              <Layers size={14} /> Security & Settings (BYOK)
             </button>
           </div>
         </div>
@@ -774,7 +952,24 @@ export default function App() {
         />
 
       </div>
-      {/* Upgrade Modal overlay over main dashboard */}
+      {/* Modals */}
+      <SaveAttachmentModal 
+        isOpen={!!attachmentToSave} 
+        onClose={() => setAttachmentToSave(null)}
+        accounts={accounts}
+        email={attachmentToSave?.email || null}
+        attachment={attachmentToSave?.attachment || null}
+      />
+      <ComposeModal 
+        isOpen={isComposeOpen} 
+        onClose={() => {
+          setIsComposeOpen(false);
+          setFileToAttach(null);
+        }} 
+        accounts={accounts} 
+        replyToEmail={replyToEmail}
+        initialDriveFile={fileToAttach}
+      />
       <UpgradeModal 
         showUpgradeModal={showUpgradeModal} 
         setShowUpgradeModal={setShowUpgradeModal} 

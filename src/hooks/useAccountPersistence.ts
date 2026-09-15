@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { get, set } from 'idb-keyval';
+import { get, set, clear } from 'idb-keyval';
 import { AccountToken } from '../types';
 
 export function useAccountPersistence() {
@@ -76,6 +76,7 @@ export function useAccountPersistence() {
     setCustomClientId('');
     setHydrationError(null);
     try {
+      await clear();
       await set('matrix_accounts', []);
       await set('matrix_active_ids', []);
       await set('matrix_byok_client_id', '');

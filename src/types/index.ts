@@ -1,10 +1,21 @@
+export type CloudProvider = 'google' | 'onedrive' | 'dropbox';
+
+export interface StorageQuotaInfo {
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  provider: CloudProvider;
+}
+
 export interface AccountToken {
   id: string;
   email: string | null;
   name: string | null;
   photoURL: string | null;
   accessToken: string;
+  provider?: CloudProvider; // Default: 'google'
   isExpired?: boolean;
+  quota?: StorageQuotaInfo;
 }
 
 export interface GmailMessage {
@@ -16,6 +27,11 @@ export interface GmailMessage {
   date: string;
   accountId: string;
   accountEmail: string;
+  accountPhoto?: string | null;
+  timestamp: number;
+  messageId?: string;
+  references?: string;
+  attachments?: { attachmentId: string; filename: string; mimeType: string; size: number }[];
 }
 
 export interface DriveFile {
@@ -28,20 +44,6 @@ export interface DriveFile {
   iconLink?: string;
   accountId: string;
   accountEmail: string;
-}
-
-export interface CalendarEvent {
-  id: string;
-  summary: string;
-  start: {
-    dateTime?: string;
-    date?: string;
-  };
-  end: {
-    dateTime?: string;
-    date?: string;
-  };
-  htmlLink: string;
-  accountId: string;
-  accountEmail: string;
+  accountPhoto?: string | null;
+  timestamp: number;
 }

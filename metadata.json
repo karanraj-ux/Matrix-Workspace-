@@ -1,6 +1,6 @@
 {
   "name": "Matrix Workspace",
-  "description": "A unified command center to seamlessly manage multiple Google Workspace accounts, emails, files, and calendars in a single dashboard.",
+  "description": "A client-side multi-cloud RAID-5 virtual storage filesystem and unified workspace across Google Drive, OneDrive, and Dropbox with AES-256-GCM zero-knowledge encryption.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
