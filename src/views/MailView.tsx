@@ -18,6 +18,7 @@ interface MailViewProps {
     attachment: { attachmentId: string; filename: string; mimeType: string; size: number }
   ) => void;
   onAutomateSender?: (email: GmailMessage) => void;
+  isAutomating?: boolean;
 }
 
 export const MailView: React.FC<MailViewProps> = ({
@@ -33,6 +34,7 @@ export const MailView: React.FC<MailViewProps> = ({
   onReply,
   onSaveAttachmentToDrive,
   onAutomateSender,
+  isAutomating,
 }) => {
   return (
     <div className="flex-1 h-full bg-[#F8FAFC] flex overflow-hidden font-sans">
@@ -160,6 +162,7 @@ export const MailView: React.FC<MailViewProps> = ({
                 )}
 
                 <button
+                  disabled={isAutomating}
                   onClick={() => executeEmailAction('archive')}
                   className="px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
                   title="Archive Message"

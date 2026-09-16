@@ -9,6 +9,7 @@ import {
 import {
   uploadChunkToProvider,
   makeGoogleDriveFilePublic,
+  revokeGoogleDriveFilePublic,
   downloadChunkFromProvider,
   deleteChunkFromProvider,
   fetchAccountQuota,
@@ -523,4 +524,64 @@ export const makeManifestChunksPublic = async (manifest: ShardManifest, accounts
   });
 
   await Promise.all(publicPromises);
+};
+
+export const revokeManifestChunksPublic = async (manifest: ShardManifest, accounts: AccountToken[]) => {
+  const allChunks = [...manifest.dataChunks, ...(manifest.parityChunk ? [manifest.parityChunk] : [])];
+  
+  const revokePromises = allChunks.map(async (chunk) => {
+    if (chunk.provider === 'google') {
+      const account = accounts.find((a) => a.id === chunk.accountId);
+      if (account) {
+        await revokeGoogleDriveFilePublic(chunk.driveFileId, account.accessToken);
+      }
+    }
+  });
+
+  await Promise.all(revokePromises);
+};
+
+export const downloadShardedFileStream = async (
+  manifest: ShardManifest,
+  accounts: AccountToken[],
+  onProgress: (progress: number, completedChunks: number, totalChunks: number, stage?: string) => void,
+  explicitKey?: string
+): Promise<boolean> => {
+  if (!('showSaveFilePicker' in window)) return false; // Not supported
+  
+  try {
+    const handle = await (window as any).showSaveFilePicker({
+      suggestedName: manifest.filename
+    });
+    const writable = await handle.createWritable();
+    
+    const masterKey = explicitKey || (manifest.isEncrypted ? await getOrGenerateMasterKey() : '');
+    const totalChunks = manifest.chunks.length;
+    let completed = 0;
+
+    for (let i = 0; i < totalChunks; i++) {
+      const chunk = manifest.chunks[i];
+      const acc = accounts.find(a => a.id === chunk.accountId);
+      if (!acc) throw new Error(`Account missing for chunk ${i}`);
+
+      onProgress((completed / totalChunks) * 100, completed, totalChunks, `Downloading chunk ${i + 1}...`);
+      
+      const rawBuf = await downloadChunkFromProvider(acc, chunk.driveFileId, chunk.downloadPath);
+      let chunkData = rawBuf;
+      if (chunk.cryptoMeta?.encrypted && masterKey) {
+        chunkData = await decryptChunkWorker(rawBuf, masterKey, chunk.cryptoMeta.iv, chunk.cryptoMeta.salt);
+      }
+      
+      await writable.write(chunkData);
+      completed++;
+      onProgress((completed / totalChunks) * 100, completed, totalChunks, `Chunk ${i + 1} written to disk`);
+    }
+    
+    await writable.close();
+    onProgress(100, totalChunks, totalChunks, 'Download complete');
+    return true;
+  } catch (e: any) {
+    if (e.name === 'AbortError') return true; // User cancelled
+    throw e;
+  }
 };

@@ -30,7 +30,7 @@ import { DriveFile, AccountToken, StorageQuotaInfo } from '../types';
 import {
   uploadShardedFile,
   saveManifestToDrive,
-  downloadShardedFile,
+  downloadShardedFile, downloadShardedFileStream,
   deleteShardedFile,
   verifyShardIntegrity,
   createMagicShareLink,
@@ -266,7 +266,28 @@ export const DriveView: React.FC<DriveViewProps> = ({
       setDownloadStage('Starting parallel multi-cloud retrieval...');
       setStatusMessage(null);
 
+
+      // Try streaming directly to disk to save RAM
+      if ('showSaveFilePicker' in window) {
+        const streamed = await downloadShardedFileStream(
+          record.manifest,
+          accounts,
+          (p, cur, tot, stage) => {
+            setDownloadProgress(p);
+            if (stage) setDownloadStage(stage);
+          },
+          explicitKey || record.manifest.magicKey
+        );
+        if (streamed) {
+           setDownloadingId(null);
+           setStatusMessage({ type: 'success', text: 'File downloaded directly to disk.' });
+           return;
+        }
+      }
+
+      // Fallback for browsers without Stream API
       const blob = await downloadShardedFile(
+
         record.manifest,
         accounts,
         (p, cur, tot, stage) => {
@@ -351,6 +372,19 @@ export const DriveView: React.FC<DriveViewProps> = ({
   };
 
   // Generate Magic Share Link
+
+  const handleRevokeMagicLink = async (record: StoredManifestRecord) => {
+    setStatusMessage({ type: 'info', text: 'Revoking public permissions...' });
+    try {
+      await revokeManifestChunksPublic(record.manifest, accounts);
+      setStatusMessage({ type: 'success', text: 'Magic Link revoked successfully.' });
+    } catch (e) {
+      console.warn('Could not revoke all chunks', e);
+      setStatusMessage({ type: 'error', text: 'Failed to revoke permissions.' });
+    }
+  };
+
+
   const handleGenerateMagicLink = async (record: StoredManifestRecord) => {
     setStatusMessage({ type: 'info', text: 'Updating chunk permissions for public zero-auth access...' });
     try {

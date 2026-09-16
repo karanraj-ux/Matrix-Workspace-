@@ -257,3 +257,19 @@ export const makeGoogleDriveFilePublic = async (fileId: string, accessToken: str
     console.warn(`Could not make file ${fileId} public`, await res.text());
   }
 };
+
+export const revokeGoogleDriveFilePublic = async (fileId: string, accessToken: string) => {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (res.ok) {
+    const data = await res.json();
+    const publicPerm = data.permissions?.find((p) => p.type === 'anyone');
+    if (publicPerm) {
+      await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions/${publicPerm.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+    }
+  }
+};

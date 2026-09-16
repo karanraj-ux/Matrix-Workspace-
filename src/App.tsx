@@ -47,6 +47,7 @@ export default function App() {
   const [automateEmail, setAutomateEmail] = useState<GmailMessage | null>(null);
   const [automateTarget, setAutomateTarget] = useState('');
   const [automateFeedback, setAutomateFeedback] = useState('');
+  const [isAutomating, setIsAutomating] = useState(false);
 
   const [fileToAttach, setFileToAttach] = useState<DriveFile | null>(null);
   const [attachmentToSave, setAttachmentToSave] = useState<{ email: GmailMessage, attachment: { attachmentId: string; filename: string; mimeType: string; size: number } } | null>(null);

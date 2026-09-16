@@ -14,8 +14,11 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { get } from 'idb-keyval';
+import { fetchAccountQuota } from '../services/multiCloudAdapter';
 import { AccountToken, GmailMessage, DriveFile } from '../types';
 import { AutomationLog, AutomationRule } from '../types/automation';
+
+import { StorageQuotaInfo } from '../types';
 
 interface DashboardViewProps {
   accounts: AccountToken[];
@@ -52,7 +55,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const latestEmails = filteredEmails.slice(0, 3);
   const latestFiles = filteredFiles.slice(0, 3);
 
-  const totalVirtualStorageGb = activeAccounts.length * 15;
+  
+  const [accountQuotas, setAccountQuotas] = useState<{ [id: string]: StorageQuotaInfo }>({});
+  const [isLoadingQuota, setIsLoadingQuota] = useState(false);
+
+  useEffect(() => {
+    const activeAccounts = accounts.filter(a => !a.isExpired);
+    if (activeAccounts.length === 0) return;
+
+    const loadQuotas = async () => {
+      setIsLoadingQuota(true);
+      const newQuotas: { [id: string]: StorageQuotaInfo } = {};
+      await Promise.all(
+        activeAccounts.map(async (acc) => {
+          try {
+            const q = await fetchAccountQuota(acc);
+            newQuotas[acc.id] = q;
+          } catch (e) {
+            console.warn(`Failed to fetch quota for ${acc.email}`, e);
+          }
+        })
+      );
+      setAccountQuotas(newQuotas);
+      setIsLoadingQuota(false);
+    };
+    loadQuotas();
+  }, [accounts]);
+
+  const quotaList = Object.values(accountQuotas);
+  const totalPooledBytes = quotaList.reduce((acc, q) => acc + (q.totalBytes || 0), 0);
+  const totalVirtualStorageGb = totalPooledBytes > 0 ? Math.round(totalPooledBytes / (1024 * 1024 * 1024)) : activeAccounts.length * 15;
+
 
   return (
     <div className="flex-1 h-full bg-[#F8FAFC] text-slate-800 flex flex-col font-sans overflow-y-auto">
