@@ -6,6 +6,8 @@ import { logout } from './auth';
 
 import { fetchDriveFiles, fetchGmailMessages, syncConfigToShadowDb, fetchConfigFromShadowDb } from './services/googleService';
 import { AccountToken, GmailMessage, DriveFile } from './types';
+import { AutomationRule } from './types/automation';
+import { get, set } from 'idb-keyval';
 
 import { Sidebar } from './components/Sidebar';
 import { UpgradeModal } from './components/UpgradeModal';
@@ -40,6 +42,12 @@ export default function App() {
 
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [replyToEmail, setReplyToEmail] = useState<GmailMessage | null>(null);
+
+  // Automation Modal State
+  const [automateEmail, setAutomateEmail] = useState<GmailMessage | null>(null);
+  const [automateTarget, setAutomateTarget] = useState('');
+  const [automateFeedback, setAutomateFeedback] = useState('');
+
   const [fileToAttach, setFileToAttach] = useState<DriveFile | null>(null);
   const [attachmentToSave, setAttachmentToSave] = useState<{ email: GmailMessage, attachment: { attachmentId: string; filename: string; mimeType: string; size: number } } | null>(null);
 
@@ -809,6 +817,7 @@ export default function App() {
                       executeEmailAction={executeEmailAction}
                       isEmailLoading={isEmailLoading}
                       emailHtml={emailHtml}
+                      onAutomateSender={(email) => setAutomateEmail(email)}
                       onReply={(email) => {
                         setReplyToEmail(email);
                         setIsComposeOpen(true);

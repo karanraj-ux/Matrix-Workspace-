@@ -8,6 +8,7 @@ import {
 } from './cryptoWorkerClient';
 import {
   uploadChunkToProvider,
+  makeGoogleDriveFilePublic,
   downloadChunkFromProvider,
   deleteChunkFromProvider,
   fetchAccountQuota,
@@ -503,4 +504,23 @@ export const verifyShardIntegrity = async (
     missingChunks: missing,
     parityHealthy,
   };
+};
+
+/**
+ * Grants public read access to all chunks in a manifest (Google Drive only for now).
+ * This makes peer-to-peer Magic Links completely decoupled from the sender's OAuth session.
+ */
+export const makeManifestChunksPublic = async (manifest: ShardManifest, accounts: AccountToken[]) => {
+  const allChunks = [...manifest.dataChunks, ...(manifest.parityChunk ? [manifest.parityChunk] : [])];
+  
+  const publicPromises = allChunks.map(async (chunk) => {
+    if (chunk.provider === 'google') {
+      const account = accounts.find((a) => a.id === chunk.accountId);
+      if (account) {
+        await makeGoogleDriveFilePublic(chunk.driveFileId, account.accessToken);
+      }
+    }
+  });
+
+  await Promise.all(publicPromises);
 };

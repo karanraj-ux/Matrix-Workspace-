@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mail, MailOpen, Archive, CheckSquare, Reply, X, Loader2, ArrowLeft } from 'lucide-react';
+import { Mail, MailOpen, Archive, CheckSquare, Reply, X, Loader2, ArrowLeft, Zap } from 'lucide-react';
 import { GmailMessage } from '../types';
 
 interface MailViewProps {
@@ -17,6 +17,7 @@ interface MailViewProps {
     email: GmailMessage,
     attachment: { attachmentId: string; filename: string; mimeType: string; size: number }
   ) => void;
+  onAutomateSender?: (email: GmailMessage) => void;
 }
 
 export const MailView: React.FC<MailViewProps> = ({
@@ -31,6 +32,7 @@ export const MailView: React.FC<MailViewProps> = ({
   emailHtml,
   onReply,
   onSaveAttachmentToDrive,
+  onAutomateSender,
 }) => {
   return (
     <div className="flex-1 h-full bg-[#F8FAFC] flex overflow-hidden font-sans">
@@ -145,6 +147,18 @@ export const MailView: React.FC<MailViewProps> = ({
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
+
+                {onAutomateSender && (
+                  <button
+                    onClick={() => onAutomateSender(activeEmail)}
+                    className="hidden sm:flex px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-xl text-xs font-semibold transition-colors items-center gap-1.5 cursor-pointer shadow-2xs"
+                    title="Automate this sender"
+                  >
+                    <Zap size={14} />
+                    <span>Automate</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => executeEmailAction('archive')}
                   className="px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"

@@ -352,6 +352,12 @@ export const DriveView: React.FC<DriveViewProps> = ({
 
   // Generate Magic Share Link
   const handleGenerateMagicLink = async (record: StoredManifestRecord) => {
+    setStatusMessage({ type: 'info', text: 'Updating chunk permissions for public zero-auth access...' });
+    try {
+      await makeManifestChunksPublic(record.manifest, accounts);
+    } catch (e) {
+      console.warn('Could not make all chunks public', e);
+    }
     try {
       const link = await createMagicShareLink(record.manifest);
       setMagicLinkModal({
