@@ -180,10 +180,10 @@ export const MailView: React.FC<MailViewProps> = ({
                 </button>
                 <button
                   onClick={() => onReply(activeEmail)}
-                  className="p-1.5 text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer border border-slate-200 shadow-2xs"
+                  className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold transition-colors cursor-pointer border border-blue-200 flex items-center gap-1.5 shadow-2xs"
                   title="Reply"
                 >
-                  <Reply size={15} />
+                  <Reply size={14} /> <span>Reply</span>
                 </button>
               </div>
             </div>

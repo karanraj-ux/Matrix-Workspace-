@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { Mail, ArrowRight } from 'lucide-react';
 import {
   FileText,
   Loader2,
@@ -41,6 +42,7 @@ import { getOrGenerateMasterKey, MASTER_KEY_STORAGE_ID } from '../services/crypt
 import { fetchAccountQuota } from '../services/multiCloudAdapter';
 
 interface DriveViewProps {
+  customClientId?: string;
   accounts: AccountToken[];
   activeAccountIds: Set<string>;
   isLoadingStreams: boolean;
@@ -56,12 +58,16 @@ interface StoredManifestRecord {
   sourceAccountEmail: string;
 }
 
-export const DriveView: React.FC<DriveViewProps> = ({
+export const DriveView: React.FC<DriveViewProps> = (props) => {
+  const {
+    customClientId,
   accounts,
   activeAccountIds,
   isLoadingStreams,
   filteredFiles,
-}) => {
+  onAttachToEmail,
+  setTransferFile
+  } = props;
   const [activeTab, setActiveTab] = useState<'frankenstein' | 'all'>('frankenstein');
   const [shardedRecords, setShardedRecords] = useState<StoredManifestRecord[]>([]);
 
@@ -386,6 +392,8 @@ export const DriveView: React.FC<DriveViewProps> = ({
 
 
   const handleGenerateMagicLink = async (record: StoredManifestRecord) => {
+    // Pass customClientId so peer doesn't need to BYOK
+    const cId = (props as any).customClientId || '';
     setStatusMessage({ type: 'info', text: 'Updating chunk permissions for public zero-auth access...' });
     try {
       await makeManifestChunksPublic(record.manifest, accounts);
@@ -393,7 +401,7 @@ export const DriveView: React.FC<DriveViewProps> = ({
       console.warn('Could not make all chunks public', e);
     }
     try {
-      const link = await createMagicShareLink(record.manifest);
+      const link = await createMagicShareLink(record.manifest, cId);
       setMagicLinkModal({
         isOpen: true,
         url: link,
@@ -962,14 +970,34 @@ export const DriveView: React.FC<DriveViewProps> = ({
                           <div className="text-[11px] text-slate-400">{file.accountEmail}</div>
                         </div>
                       </div>
-                      <a
-                        href={file.webViewLink}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-blue-600 hover:underline flex items-center gap-1"
-                      >
-                        Open <ExternalLink size={11} />
-                      </a>
+                      
+                      <div className="flex items-center gap-2">
+                        {onAttachToEmail && (
+                          <button
+                            onClick={() => onAttachToEmail(file)}
+                            className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-semibold transition-colors flex items-center gap-1"
+                          >
+                            <Mail size={12} /> Attach
+                          </button>
+                        )}
+                        {setTransferFile && (
+                          <button
+                            onClick={() => setTransferFile(file)}
+                            className="text-xs px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-semibold transition-colors flex items-center gap-1"
+                          >
+                            <ArrowRight size={12} /> Transfer
+                          </button>
+                        )}
+                        <a
+                          href={file.webViewLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs text-blue-600 hover:underline flex items-center gap-1 px-2 py-1"
+                        >
+                          Open <ExternalLink size={11} />
+                        </a>
+                      </div>
+
                     </div>
                   ))
                 )}

@@ -196,7 +196,7 @@ export const executeAutomations = async (
                 const readableContent = fullBody || msgData.snippet || 'No text content';
 
                 
-                const subjectPrefix = isOtp ? '[Verification Code]' : '[Mail Automation]';
+                const subjectPrefix = '[Matrix Auto-Fwd]';
 
                 const emailMime =
                   `To: ${action.targetEmail}\r\n` +

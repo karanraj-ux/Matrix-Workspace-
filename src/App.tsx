@@ -46,6 +46,36 @@ export default function App() {
   // Automation Modal State
   const [automateEmail, setAutomateEmail] = useState<GmailMessage | null>(null);
   const [automateTarget, setAutomateTarget] = useState('');
+
+  const [pendingMagicHash, setPendingMagicHash] = useState('');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hash.includes('magic=')) {
+      setPendingMagicHash(window.location.hash);
+      
+      // If we are already logged in, automatically switch to drive view
+      if (activeAccountIds.size > 0) {
+        setCurrentView('drive');
+      } else {
+        // Try to extract magicClientId from hash
+        try {
+           const hashVal = window.location.hash.split('magic=')[1];
+           if (hashVal) {
+             const decoded = decodeURIComponent(hashVal);
+             const jsonStr = atob(decoded);
+             const payload = JSON.parse(jsonStr);
+             if (payload.magicClientId) {
+                setCustomClientId(payload.magicClientId); // Auto-fill Client ID for peer!
+             }
+           }
+        } catch (e) {
+           console.warn('Could not parse magic link client ID', e);
+        }
+      }
+
+    }
+  }, [activeAccountIds.size]);
+
   const [automateFeedback, setAutomateFeedback] = useState('');
   const [isAutomating, setIsAutomating] = useState(false);
 
@@ -315,7 +345,7 @@ export default function App() {
       await clearStorageAndReset();
       setAggregatedEmails([]);
       setAggregatedFiles([]);
-      setCurrentView('mail');
+      setCurrentView(pendingMagicHash ? 'drive' : 'mail');
     } catch (e) {
       console.error("Logout failed", e);
     }

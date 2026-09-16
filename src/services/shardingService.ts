@@ -301,9 +301,15 @@ export const downloadShardedFile = async (
   const failedChunkIndices: number[] = [];
 
   const fetchAndDecryptChunk = async (chunk: ShardChunk): Promise<ArrayBuffer> => {
-    const acc = accounts.find(a => a.id === chunk.accountId);
+    let acc = accounts.find(a => a.id === chunk.accountId);
     if (!acc || acc.isExpired) {
-      throw new Error(`Account ${chunk.accountEmail} (${chunk.provider}) is unavailable.`);
+      // Magic Link scenario: We don't own the chunk's account.
+      // Borrow the first active account of the SAME provider (or any provider) to supply an OAuth token for the public read.
+      // Note: Google Drive API requires ANY valid OAuth token to download a public file via the REST API.
+      acc = accounts.find(a => !a.isExpired && a.provider === chunk.provider) || accounts.find(a => !a.isExpired);
+      if (!acc) {
+        throw new Error(`Please connect an account to download this public file.`);
+      }
     }
 
     const rawBuf = await downloadChunkFromProvider(acc, chunk.driveFileId, chunk.downloadPath);
@@ -388,13 +394,17 @@ export const downloadShardedFile = async (
  * Generate a self-contained P2P Magic Link with embedded decryption key.
  */
 export const createMagicShareLink = async (
-  manifest: ShardManifest
+  manifest: ShardManifest,
+  clientId?: string
 ): Promise<string> => {
   const masterKey = manifest.isEncrypted ? await getOrGenerateMasterKey() : '';
-  const exportPayload = {
+  const exportPayload: any = {
     ...manifest,
     magicKey: masterKey,
   };
+  if (clientId) {
+    exportPayload.magicClientId = clientId;
+  }
   const jsonStr = JSON.stringify(exportPayload);
   const base64 = btoa(encodeURIComponent(jsonStr));
   const url = new URL(window.location.href);
