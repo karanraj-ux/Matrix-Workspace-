@@ -22,10 +22,9 @@ export const fetchAccountQuota = async (account: AccountToken): Promise<StorageQ
       if (!res.ok) throw new Error(`Google quota fetch failed: ${res.statusText}`);
       const data = await res.json();
       const limitRaw = data.storageQuota?.limit;
-      
+      const usage = parseInt(data.storageQuota?.usage || '0', 10);
       // If limit is missing (Workspace unlimited), set a massive virtual limit (e.g. 5TB or double usage)
       const limit = limitRaw ? parseInt(limitRaw, 10) : Math.max(usage * 2, 5 * 1024 * 1024 * 1024 * 1024);
-      const usage = parseInt(data.storageQuota?.usage || '0', 10);
       return {
         totalBytes: limit,
         usedBytes: usage,

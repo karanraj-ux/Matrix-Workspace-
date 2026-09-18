@@ -522,7 +522,7 @@ export const verifyShardIntegrity = async (
  * This makes peer-to-peer Magic Links completely decoupled from the sender's OAuth session.
  */
 export const makeManifestChunksPublic = async (manifest: ShardManifest, accounts: AccountToken[]) => {
-  const allChunks = [...manifest.dataChunks, ...(manifest.parityChunk ? [manifest.parityChunk] : [])];
+  const allChunks = [...manifest.chunks, ...(manifest.parityChunk ? [manifest.parityChunk] : [])];
   
   const publicPromises = allChunks.map(async (chunk) => {
     if (chunk.provider === 'google') {
@@ -537,7 +537,7 @@ export const makeManifestChunksPublic = async (manifest: ShardManifest, accounts
 };
 
 export const revokeManifestChunksPublic = async (manifest: ShardManifest, accounts: AccountToken[]) => {
-  const allChunks = [...manifest.dataChunks, ...(manifest.parityChunk ? [manifest.parityChunk] : [])];
+  const allChunks = [...manifest.chunks, ...(manifest.parityChunk ? [manifest.parityChunk] : [])];
   
   const revokePromises = allChunks.map(async (chunk) => {
     if (chunk.provider === 'google') {

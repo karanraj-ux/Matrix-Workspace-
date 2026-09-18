@@ -82,7 +82,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     loadQuotas();
   }, [accounts]);
 
-  const quotaList = Object.values(accountQuotas);
+  const quotaList = Object.values(accountQuotas) as StorageQuotaInfo[];
   const totalPooledBytes = quotaList.reduce((acc, q) => acc + (q.totalBytes || 0), 0);
   const totalVirtualStorageGb = totalPooledBytes > 0 ? Math.round(totalPooledBytes / (1024 * 1024 * 1024)) : activeAccounts.length * 15;
 

@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Zap, Layers, Search, Plus, CheckSquare, Square, Mail, FileText, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard, Menu } from 'lucide-react';
+import { Zap, Layers, Search, Plus, CheckSquare, Square, Mail, FileText, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard, Menu, Sparkles } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { logout } from './auth';
 
 import { fetchDriveFiles, fetchGmailMessages, syncConfigToShadowDb, fetchConfigFromShadowDb } from './services/googleService';
 import { AccountToken, GmailMessage, DriveFile } from './types';
 import { AutomationRule } from './types/automation';
-import { get, set } from 'idb-keyval';
 
 import { Sidebar } from './components/Sidebar';
 import { UpgradeModal } from './components/UpgradeModal';
@@ -219,8 +218,27 @@ export default function App() {
     try {
       setIsAddingAccount(true);
       
+      let effectiveClientId = customClientId?.trim();
+      const currentHash = pendingMagicHash || (typeof window !== 'undefined' ? window.location.hash : '');
+      if (!effectiveClientId && currentHash.includes('magic=')) {
+        try {
+          const hashVal = currentHash.split('magic=')[1];
+          if (hashVal) {
+            const decoded = decodeURIComponent(hashVal);
+            const jsonStr = atob(decoded);
+            const payload = JSON.parse(jsonStr);
+            if (payload.magicClientId) {
+              effectiveClientId = payload.magicClientId.trim();
+              setCustomClientId(effectiveClientId);
+            }
+          }
+        } catch (e) {
+          console.warn('Could not parse magic link client ID inside handleLogin', e);
+        }
+      }
+
       // If no custom Client ID is set, direct to Settings!
-      if (!customClientId || !customClientId.trim()) {
+      if (!effectiveClientId) {
         setCurrentView('settings');
         setIsAddingAccount(false);
         return;
@@ -233,10 +251,10 @@ export default function App() {
         script.src = 'https://accounts.google.com/gsi/client';
         script.async = true;
         script.defer = true;
-        script.onload = () => triggerGsiLogin();
+        script.onload = () => triggerGsiLogin(effectiveClientId);
         document.body.appendChild(script);
       } else {
-        triggerGsiLogin();
+        triggerGsiLogin(effectiveClientId);
       }
     } catch (error) {
       console.error(error);
@@ -244,10 +262,17 @@ export default function App() {
     }
   };
 
-  const triggerGsiLogin = () => {
+  const triggerGsiLogin = (clientIdToUse?: string) => {
     try {
+      const activeCId = (clientIdToUse || customClientId)?.trim();
+      if (!activeCId) {
+        setCurrentView('settings');
+        setIsAddingAccount(false);
+        return;
+      }
+
       const client = (window as any).google.accounts.oauth2.initTokenClient({
-        client_id: customClientId.trim(),
+        client_id: activeCId,
         scope: 'email profile openid https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send',
         prompt: 'consent select_account',
         callback: async (tokenResponse: any) => {
@@ -291,7 +316,9 @@ export default function App() {
              });
              setActiveAccountIds(prev => new Set(prev).add(newAccount.id));
 
-             if (isFirstAccount) {
+             if (pendingMagicHash || (typeof window !== 'undefined' && window.location.hash.includes('magic='))) {
+                setCurrentView('drive');
+             } else if (isFirstAccount) {
                 try {
                   const shadowConfig = await fetchConfigFromShadowDb(accessToken);
                   if (shadowConfig) {
@@ -632,6 +659,17 @@ export default function App() {
             <p className="text-lg text-neutral-500 max-w-xl mx-auto leading-relaxed">
               Connect your Google, OneDrive, and Dropbox accounts to access Mail, Distributed Drive, and Automations in a single secure, client-side dashboard. 
             </p>
+            
+            {pendingMagicHash && (
+              <div className="bg-gradient-to-r from-blue-900/40 via-indigo-900/30 to-purple-900/40 border border-blue-500/30 rounded-2xl p-4 text-left max-w-lg mx-auto shadow-lg backdrop-blur-xs">
+                <div className="flex items-center gap-2 text-blue-400 font-bold text-sm">
+                  <Sparkles className="w-4 h-4 text-amber-400" /> Decentralized Magic Link Detected
+                </div>
+                <p className="text-xs text-neutral-300 mt-1">
+                  Someone shared an encrypted/sharded file with you! Connect any Google account to authenticate with Google Drive API and reassemble the file.
+                </p>
+              </div>
+            )}
             
             <div className="pt-6 flex flex-col items-center gap-4">
               <button 

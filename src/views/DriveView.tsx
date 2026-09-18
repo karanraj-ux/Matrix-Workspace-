@@ -36,6 +36,8 @@ import {
   verifyShardIntegrity,
   createMagicShareLink,
   decodeMagicShareLink,
+  makeManifestChunksPublic,
+  revokeManifestChunksPublic,
   ShardManifest,
 } from '../services/shardingService';
 import { getOrGenerateMasterKey, MASTER_KEY_STORAGE_ID } from '../services/cryptoWorkerClient';
