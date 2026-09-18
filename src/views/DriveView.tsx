@@ -74,6 +74,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
   // Upload States
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadMode, setUploadMode] = useState<'vault' | 'standard'>('vault');
   const [uploadStage, setUploadStage] = useState('');
   const [uploadChunkStats, setUploadChunkStats] = useState<{ current: number; total: number }>({
     current: 0,
@@ -209,6 +210,36 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
       setUploadProgress(0);
       setUploadStage('Initializing distributed multi-cloud worker...');
       setStatusMessage(null);
+
+      
+    if (uploadMode === 'standard') {
+      try {
+        setIsUploading(true);
+        setUploadProgress(0);
+        setUploadStage('Directing standard upload to connected cloud...');
+        setStatusMessage(null);
+        
+        // Use first active account
+        const account = accounts.find(a => a.id === activeAccounts[0].id);
+        if (!account) throw new Error('Account not found');
+        
+        const { uploadFileToDriveResumable } = await import('../services/googleService');
+        await uploadFileToDriveResumable(account.accessToken, file, (prog) => {
+          setUploadProgress(prog);
+        });
+        
+        setUploadStage('Complete!');
+        setUploadProgress(100);
+        setTimeout(() => {
+          setIsUploading(false);
+          setUploadProgress(0);
+        }, 1500);
+      } catch (e: any) {
+         setStatusMessage({ type: 'error', text: e.message });
+         setIsUploading(false);
+      }
+      return;
+    }
 
       const manifest = await uploadShardedFile(file, activeAccounts, {
         enableEncryption,
@@ -558,6 +589,22 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                 }
               }}
             />
+            
+            <div className="flex bg-slate-100 rounded-lg p-1 mr-4">
+              <button
+                onClick={() => setUploadMode('standard')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${uploadMode === 'standard' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Standard
+              </button>
+              <button
+                onClick={() => setUploadMode('vault')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1 ${uploadMode === 'vault' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Vault (RAID-5)
+              </button>
+            </div>
+
             <button
               disabled={isUploading || activeAccounts.length === 0}
               onClick={() => fileInputRef.current?.click()}
@@ -980,6 +1027,26 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                             <Mail size={12} /> Attach
                           </button>
                         )}
+                        <button
+                            onClick={async () => {
+                              try {
+                                const acc = accounts.find(a => a.email === file.accountEmail);
+                                if (!acc) return;
+                                const { makeFilePublic } = await import('../services/googleService');
+                                await makeFilePublic(file.id, acc.accessToken);
+                                setMagicLinkModal({
+                                  isOpen: true,
+                                  url: file.webViewLink,
+                                  filename: file.name
+                                });
+                              } catch(e) {
+                                alert("Failed to generate link");
+                              }
+                            }}
+                            className="text-xs px-2 py-1 bg-green-50 hover:bg-green-100 text-green-700 rounded-lg font-semibold transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <ExternalLink size={12} /> Share
+                          </button>
                         {setTransferFile && (
                           <button
                             onClick={() => setTransferFile(file)}

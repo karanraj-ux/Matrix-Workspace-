@@ -129,6 +129,13 @@ export const executeAutomations = async (
           if (!msgRes.ok) continue;
           const msgData = await msgRes.json();
 
+          // Time Boundary: Only process emails received AFTER the rule was created
+          const msgDate = parseInt(msgData.internalDate || '0', 10);
+          if (msgDate < rule.createdAt) {
+            console.log('Skipping old email (arrived before rule creation)');
+            continue;
+          }
+
           const headers = msgData.payload?.headers || [];
           const getH = (n: string) =>
             headers.find((h: any) => h.name.toLowerCase() === n.toLowerCase())?.value || '';
