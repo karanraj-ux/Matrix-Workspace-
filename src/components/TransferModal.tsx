@@ -27,10 +27,17 @@ export const TransferModal: React.FC<TransferModalProps> = ({
         
         <div className="p-5 border-b border-white/5 flex items-start justify-between">
           <div>
-            <h3 className="font-bold text-lg text-white flex items-center gap-2">
-              <ArrowRightLeft className="w-5 h-5 text-neutral-500" /> Magic Transfer
-            </h3>
-            <p className="text-xs text-neutral-500 mt-1 truncate max-w-[280px]">Copying: <b>{transferFile.name}</b></p>
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-lg text-white flex items-center gap-2">
+                <ArrowRightLeft className="w-5 h-5 text-emerald-400" /> Direct Account Transfer
+              </h3>
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30 font-medium">
+                Standard
+              </span>
+            </div>
+            <p className="text-xs text-neutral-400 mt-1 truncate max-w-[280px]">
+              Transferring: <b className="text-white">{transferFile.name}</b>
+            </p>
           </div>
           <button onClick={() => !isTransferring && setTransferFile(null)} className="p-2 hover:bg-white/5 rounded-full text-neutral-400">
             <X size={20} />

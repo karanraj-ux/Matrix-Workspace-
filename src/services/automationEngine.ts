@@ -104,13 +104,54 @@ export const executeAutomations = async (
 
     if (rule.trigger === 'ON_NEW_EMAIL') {
       try {
-        // Fetch latest 10 unread emails
-        const listRes = await fetch(
+        // Proactive Token Health Check: verify access token isn't expired/invalid before attempting operations
+        const healthCheck = await fetch('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=' + encodeURIComponent(sourceAcc.accessToken));
+        if (!healthCheck.ok) {
+          console.warn(`[AutomationEngine] Token expired for account: ${sourceAcc.email}`);
+          sourceAcc.isExpired = true;
+          await addLog({
+            ruleName: rule.name,
+            actionTaken: 'Token Health Check: Expired',
+            status: 'error',
+            accountEmail: sourceAcc.email || undefined,
+            details: 'OAuth token has expired. Forwarder skipped immediately without waiting for request failures.',
+          });
+          continue;
+        }
+
+        const healthData = await healthCheck.json().catch(() => ({}));
+        if (typeof healthData.expires_in === 'number' && healthData.expires_in <= 15) {
+          console.warn(`[AutomationEngine] Token expiring imminently for account: ${sourceAcc.email}`);
+          sourceAcc.isExpired = true;
+          await addLog({
+            ruleName: rule.name,
+            actionTaken: 'Token Expiring Imminently',
+            status: 'error',
+            accountEmail: sourceAcc.email || undefined,
+            details: `OAuth token expires in ${healthData.expires_in}s. Skipping forwarder to prevent mid-flight failure.`,
+          });
+          continue;
+        }
+
+        // Fetch latest 10 unread emails with retry capability
+        let listRes = await fetch(
           'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=is:unread',
           {
             headers: { Authorization: `Bearer ${sourceAcc.accessToken}` },
           }
         );
+        
+        // Handle transient 429/5xx with immediate single retry after 1.5s delay
+        if (!listRes.ok && (listRes.status === 429 || listRes.status >= 500)) {
+          await new Promise(res => setTimeout(res, 1500));
+          listRes = await fetch(
+            'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=is:unread',
+            {
+              headers: { Authorization: `Bearer ${sourceAcc.accessToken}` },
+            }
+          );
+        }
+
         if (!listRes.ok) continue;
         const listData = await listRes.json();
         const messages = listData.messages || [];

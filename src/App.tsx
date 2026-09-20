@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Zap, Layers, Search, Plus, CheckSquare, Square, Mail, FileText, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard, Menu, Sparkles } from 'lucide-react';
 import { get, set } from 'idb-keyval';
@@ -47,33 +47,87 @@ export default function App() {
   const [automateTarget, setAutomateTarget] = useState('');
 
   const [pendingMagicHash, setPendingMagicHash] = useState('');
+  const [magicDetectedFilename, setMagicDetectedFilename] = useState<string>('');
+  const [isGsiReady, setIsGsiReady] = useState(false);
+  const [authConnectingStage, setAuthConnectingStage] = useState<string>('');
+  const preInitializedTokenClientRef = useRef<any>(null);
+
+  // Helper to pre-initialize GSI Token Client synchronously
+  const setupGsiClient = (clientId: string) => {
+    if (!clientId || typeof window === 'undefined' || !(window as any).google?.accounts?.oauth2) {
+      return;
+    }
+    try {
+      preInitializedTokenClientRef.current = (window as any).google.accounts.oauth2.initTokenClient({
+        client_id: clientId.trim(),
+        scope: 'email profile openid https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send',
+        prompt: 'consent select_account',
+        callback: handleAuthCallback,
+      });
+    } catch (e) {
+      console.warn('GSI pre-initialization notice:', e);
+    }
+  };
 
   useEffect(() => {
+    let resolvedClientId = customClientId?.trim() || '';
+
     if (typeof window !== 'undefined' && window.location.hash.includes('magic=')) {
-      setPendingMagicHash(window.location.hash);
+      const hash = window.location.hash;
+      setPendingMagicHash(hash);
       
+      // Synchronously parse magic link hash payload
+      try {
+        const hashVal = hash.split('magic=')[1];
+        if (hashVal) {
+          const decoded = decodeURIComponent(hashVal);
+          const jsonStr = atob(decoded);
+          const payload = JSON.parse(jsonStr);
+          if (payload.filename) {
+            setMagicDetectedFilename(payload.filename);
+          }
+          if (payload.magicClientId) {
+            resolvedClientId = payload.magicClientId.trim();
+            setCustomClientId(resolvedClientId);
+          }
+        }
+      } catch (e) {
+        console.warn('Could not parse magic link client ID synchronously', e);
+      }
+
       // If we are already logged in, automatically switch to drive view
       if (activeAccountIds.size > 0) {
         setCurrentView('drive');
-      } else {
-        // Try to extract magicClientId from hash
-        try {
-           const hashVal = window.location.hash.split('magic=')[1];
-           if (hashVal) {
-             const decoded = decodeURIComponent(hashVal);
-             const jsonStr = atob(decoded);
-             const payload = JSON.parse(jsonStr);
-             if (payload.magicClientId) {
-                setCustomClientId(payload.magicClientId); // Auto-fill Client ID for peer!
-             }
-           }
-        } catch (e) {
-           console.warn('Could not parse magic link client ID', e);
+      }
+    }
+
+    // Check if GSI is already available or wait for it
+    const checkAndInitGsi = () => {
+      if ((window as any).google?.accounts?.oauth2) {
+        setIsGsiReady(true);
+        if (resolvedClientId) {
+          setupGsiClient(resolvedClientId);
         }
       }
+    };
 
+    checkAndInitGsi();
+
+    if (typeof window !== 'undefined' && !((window as any).google?.accounts?.oauth2)) {
+      const existingScript = document.getElementById('gsi-script');
+      if (existingScript) {
+        existingScript.addEventListener('load', checkAndInitGsi);
+      } else {
+        const script = document.createElement('script');
+        script.id = 'gsi-script';
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.async = true;
+        script.defer = true;
+        script.onload = checkAndInitGsi;
+        document.body.appendChild(script);
+      }
     }
-  }, [activeAccountIds.size]);
+  }, [activeAccountIds.size, customClientId]);
 
   const [automateFeedback, setAutomateFeedback] = useState('');
   const [isAutomating, setIsAutomating] = useState(false);
@@ -214,9 +268,93 @@ export default function App() {
     }
   }, [accounts, activeAccountIds, currentView, isInitializing]);
 
-  const handleLogin = async (forceSelect = false) => {
+  const handleAuthCallback = async (tokenResponse: any) => {
+    if (tokenResponse.error) {
+       console.error("BYOK Login Error:", tokenResponse);
+       setIsAddingAccount(false);
+       setAuthConnectingStage('');
+       return;
+    }
+    
+    setAuthConnectingStage('Securing access token & profile...');
+    const accessToken = tokenResponse.access_token;
+    
+    try {
+       const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+         headers: { Authorization: `Bearer ${accessToken}` }
+       });
+       
+       if (!userInfoRes.ok) {
+         const errText = await userInfoRes.text();
+         throw new Error(`Google UserInfo API Error (${userInfoRes.status}): ${errText}`);
+       }
+       
+       const userInfo = await userInfoRes.json();
+       
+       if (!userInfo.sub) throw new Error("No user ID found in Google UserInfo");
+
+       const newAccount: AccountToken = {
+         id: userInfo.sub,
+         email: userInfo.email,
+         name: userInfo.name,
+         photoURL: userInfo.picture,
+         accessToken: accessToken
+       };
+
+       const isFirstAccount = accounts.length === 0;
+
+       setAccounts(prev => {
+          if (prev.find(a => a.id === newAccount.id)) {
+            return prev.map(a => a.id === newAccount.id ? newAccount : a);
+          }
+          return [...prev, newAccount];
+       });
+       setActiveAccountIds(prev => new Set(prev).add(newAccount.id));
+
+       if (pendingMagicHash || (typeof window !== 'undefined' && window.location.hash.includes('magic='))) {
+          setCurrentView('drive');
+       } else if (isFirstAccount) {
+          try {
+            const shadowConfig = await fetchConfigFromShadowDb(accessToken);
+            if (shadowConfig) {
+              if (shadowConfig.accounts && Array.isArray(shadowConfig.accounts)) {
+                setAccounts(prev => {
+                  const existingIds = new Set(prev.map(a => a.id));
+                  const missingAccounts = shadowConfig.accounts.filter((a: any) => !existingIds.has(a.id));
+                  return [...prev, ...missingAccounts];
+                });
+              }
+              if (shadowConfig.activeAccountIds && Array.isArray(shadowConfig.activeAccountIds)) {
+                setActiveAccountIds(prev => new Set([...prev, ...shadowConfig.activeAccountIds]));
+              }
+              if (shadowConfig.currentView) {
+                setCurrentView(shadowConfig.currentView);
+              }
+            }
+          } catch (e) {
+            console.error("Shadow DB hydration failed", e);
+          }
+       }
+
+    } catch (e) {
+       console.error("Failed to fetch user info for BYOK", e);
+       alert("Failed to fetch Google User Info. Check console.");
+    } finally {
+       setIsAddingAccount(false);
+       setAuthConnectingStage('');
+    }
+  };
+
+  const handleLogin = (forceSelect = false) => {
     try {
       setIsAddingAccount(true);
+      setAuthConnectingStage('Waiting for account confirmation...');
+
+      // Synchronous fast-path: if pre-initialized, fire immediately on the user gesture
+      if (preInitializedTokenClientRef.current) {
+        preInitializedTokenClientRef.current.requestAccessToken();
+        return;
+      }
       
       let effectiveClientId = customClientId?.trim();
       const currentHash = pendingMagicHash || (typeof window !== 'undefined' ? window.location.hash : '');
@@ -237,28 +375,24 @@ export default function App() {
         }
       }
 
-      // If no custom Client ID is set, direct to Settings!
+      // If no custom Client ID is set and not in magic link, direct to Settings!
       if (!effectiveClientId) {
         setCurrentView('settings');
         setIsAddingAccount(false);
+        setAuthConnectingStage('');
         return;
       }
 
       // BYOK FLOW (Google Identity Services)
-      if (!document.getElementById('gsi-script')) {
-        const script = document.createElement('script');
-        script.id = 'gsi-script';
-        script.src = 'https://accounts.google.com/gsi/client';
-        script.async = true;
-        script.defer = true;
-        script.onload = () => triggerGsiLogin(effectiveClientId);
-        document.body.appendChild(script);
+      if ((window as any).google?.accounts?.oauth2) {
+        triggerGsiLogin(effectiveClientId);
       } else {
         triggerGsiLogin(effectiveClientId);
       }
     } catch (error) {
       console.error(error);
       setIsAddingAccount(false);
+      setAuthConnectingStage('');
     }
   };
 
@@ -268,92 +402,25 @@ export default function App() {
       if (!activeCId) {
         setCurrentView('settings');
         setIsAddingAccount(false);
+        setAuthConnectingStage('');
         return;
       }
+
+      setAuthConnectingStage('Waiting for account confirmation...');
 
       const client = (window as any).google.accounts.oauth2.initTokenClient({
         client_id: activeCId,
         scope: 'email profile openid https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send',
         prompt: 'consent select_account',
-        callback: async (tokenResponse: any) => {
-          if (tokenResponse.error) {
-             console.error("BYOK Login Error:", tokenResponse);
-             setIsAddingAccount(false);
-             return;
-          }
-          
-          const accessToken = tokenResponse.access_token;
-          
-          try {
-             const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-               headers: { Authorization: `Bearer ${accessToken}` }
-             });
-             
-             if (!userInfoRes.ok) {
-               const errText = await userInfoRes.text();
-               throw new Error(`Google UserInfo API Error (${userInfoRes.status}): ${errText}`);
-             }
-             
-             const userInfo = await userInfoRes.json();
-             
-             if (!userInfo.sub) throw new Error("No user ID found in Google UserInfo");
-
-             const newAccount: AccountToken = {
-               id: userInfo.sub,
-               email: userInfo.email,
-               name: userInfo.name,
-               photoURL: userInfo.picture,
-               accessToken: accessToken
-             };
-
-             const isFirstAccount = accounts.length === 0;
-
-             setAccounts(prev => {
-                if (prev.find(a => a.id === newAccount.id)) {
-                  return prev.map(a => a.id === newAccount.id ? newAccount : a);
-                }
-                return [...prev, newAccount];
-             });
-             setActiveAccountIds(prev => new Set(prev).add(newAccount.id));
-
-             if (pendingMagicHash || (typeof window !== 'undefined' && window.location.hash.includes('magic='))) {
-                setCurrentView('drive');
-             } else if (isFirstAccount) {
-                try {
-                  const shadowConfig = await fetchConfigFromShadowDb(accessToken);
-                  if (shadowConfig) {
-                    if (shadowConfig.accounts && Array.isArray(shadowConfig.accounts)) {
-                      setAccounts(prev => {
-                        const existingIds = new Set(prev.map(a => a.id));
-                        const missingAccounts = shadowConfig.accounts.filter((a: any) => !existingIds.has(a.id));
-                        return [...prev, ...missingAccounts];
-                      });
-                    }
-                    if (shadowConfig.activeAccountIds && Array.isArray(shadowConfig.activeAccountIds)) {
-                      setActiveAccountIds(prev => new Set([...prev, ...shadowConfig.activeAccountIds]));
-                    }
-                    if (shadowConfig.currentView) {
-                      setCurrentView(shadowConfig.currentView);
-                    }
-                  }
-                } catch (e) {
-                  console.error("Shadow DB hydration failed", e);
-                }
-             }
-
-          } catch (e) {
-             console.error("Failed to fetch user info for BYOK", e);
-             alert("Failed to fetch Google User Info. Check console.");
-          } finally {
-             setIsAddingAccount(false);
-          }
-        }
+        callback: handleAuthCallback,
       });
+      preInitializedTokenClientRef.current = client;
       client.requestAccessToken();
     } catch (e) {
       console.error("GSI Client initialization failed:", e);
       alert("Failed to initialize Google Auth. Is your Client ID valid?");
       setIsAddingAccount(false);
+      setAuthConnectingStage('');
     }
   };
 
@@ -661,12 +728,23 @@ export default function App() {
             </p>
             
             {pendingMagicHash && (
-              <div className="bg-gradient-to-r from-blue-900/40 via-indigo-900/30 to-purple-900/40 border border-blue-500/30 rounded-2xl p-4 text-left max-w-lg mx-auto shadow-lg backdrop-blur-xs">
-                <div className="flex items-center gap-2 text-blue-400 font-bold text-sm">
-                  <Sparkles className="w-4 h-4 text-amber-400" /> Decentralized Magic Link Detected
+              <div className="bg-gradient-to-r from-blue-950/80 via-indigo-950/70 to-purple-950/80 border border-blue-500/40 rounded-2xl p-5 text-left max-w-lg mx-auto shadow-xl backdrop-blur-md">
+                <div className="flex items-center justify-between gap-2 text-blue-400 font-bold text-sm">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-400" /> Decentralized Magic Link Detected
+                  </div>
+                  <span className="text-[10px] font-mono bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full border border-blue-400/30">
+                    Ready
+                  </span>
                 </div>
-                <p className="text-xs text-neutral-300 mt-1">
-                  Someone shared an encrypted/sharded file with you! Connect any Google account to authenticate with Google Drive API and reassemble the file.
+                {magicDetectedFilename && (
+                  <div className="mt-2.5 px-3 py-2 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
+                    <span className="text-xs font-semibold text-white truncate">{magicDetectedFilename}</span>
+                  </div>
+                )}
+                <p className="text-xs text-neutral-300 mt-2 leading-relaxed">
+                  Someone shared an encrypted, sharded file with you. Click below to connect Google Drive and reassemble it directly in your browser.
                 </p>
               </div>
             )}
@@ -675,10 +753,25 @@ export default function App() {
               <button 
                 onClick={() => handleLogin(false)}
                 disabled={isAddingAccount}
-                className="py-3.5 px-8 bg-white hover:bg-neutral-800 text-white rounded-xl font-bold text-base transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-3 disabled:opacity-70 disabled:hover:translate-y-0 w-full md:w-auto"
+                className="py-3.5 px-8 bg-white hover:bg-neutral-800 text-white rounded-xl font-bold text-base transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-3 disabled:opacity-70 disabled:hover:translate-y-0 w-full md:w-auto cursor-pointer"
               >
-                {isAddingAccount ? <Loader2 className="animate-spin w-5 h-5" /> : 'Connect Google Account'}
+                {isAddingAccount ? (
+                  <>
+                    <Loader2 className="animate-spin w-5 h-5 text-blue-400" />
+                    <span>{authConnectingStage || 'Connecting...'}</span>
+                  </>
+                ) : (
+                  <span>Connect Google Account</span>
+                )}
               </button>
+
+              {isAddingAccount && authConnectingStage && (
+                <div className="text-xs text-blue-400 animate-pulse flex items-center gap-1.5 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />
+                  {authConnectingStage}
+                </div>
+              )}
+
               <div className="flex items-center gap-2 text-xs text-neutral-400 font-medium mt-2">
                 <CheckCircle2 className="w-3.5 h-3.5 text-neutral-400" />
                 100% Client-Side. Your data never leaves the browser.

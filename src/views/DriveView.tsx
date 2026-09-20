@@ -25,23 +25,18 @@ import {
   Cloud,
   ArrowDownCircle,
   ExternalLink,
+  MoreVertical,
+  Globe,
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { DriveFile, AccountToken, StorageQuotaInfo } from '../types';
-import {
-  uploadShardedFile,
-  saveManifestToDrive,
-  downloadShardedFile, downloadShardedFileStream,
-  deleteShardedFile,
-  verifyShardIntegrity,
-  createMagicShareLink,
-  decodeMagicShareLink,
-  makeManifestChunksPublic,
-  revokeManifestChunksPublic,
-  ShardManifest,
-} from '../services/shardingService';
+import { ShardManifest, uploadShardedFile, saveManifestToDrive, downloadShardedFile, downloadShardedFileStream, deleteShardedFile, verifyShardIntegrity, createMagicShareLink, decodeMagicShareLink, makeManifestChunksPublic, revokeManifestChunksPublic } from '../services/shardingService';
 import { getOrGenerateMasterKey, MASTER_KEY_STORAGE_ID } from '../services/cryptoWorkerClient';
 import { fetchAccountQuota } from '../services/multiCloudAdapter';
+import { StandardUploadPickerModal } from '../components/StandardUploadPickerModal';
+import { StandardShareModal } from '../components/StandardShareModal';
+import { MultiShareModal, MultiShareItem } from '../components/MultiShareModal';
+import { StandardMultiUploadPickerModal } from '../components/StandardMultiUploadPickerModal';
 
 interface DriveViewProps {
   customClientId?: string;
@@ -128,6 +123,48 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
   // Drag-and-drop state
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
+  // Standard Upload Destination Account Picker
+  const [standardPickerOpen, setStandardPickerOpen] = useState(false);
+  const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
+
+  // Active Standard File Dropdown Menu
+  const [activeFileMenuId, setActiveFileMenuId] = useState<string | null>(null);
+
+  // Active Vault Shard Dropdown Menu
+  const [activeVaultMenuId, setActiveVaultMenuId] = useState<string | null>(null);
+
+  // Multi-Selection State for Bulk Actions & Sharing
+  const [selectedVaultFileIds, setSelectedVaultFileIds] = useState<Set<string>>(new Set());
+  const [selectedRawFileIds, setSelectedRawFileIds] = useState<Set<string>>(new Set());
+
+  // Multi-Share Modal State
+  const [multiShareModal, setMultiShareModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    items: MultiShareItem[];
+  }>({
+    isOpen: false,
+    title: '',
+    items: [],
+  });
+
+  // Standard Multi-Upload Destination Picker State
+  const [multiUploadPickerOpen, setMultiUploadPickerOpen] = useState(false);
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+
+  // Standard Upload Instant Share Modal
+  const [standardShareModal, setStandardShareModal] = useState<{
+    isOpen: boolean;
+    url: string;
+    filename: string;
+    accountEmail: string;
+  }>({
+    isOpen: false,
+    url: '',
+    filename: '',
+    accountEmail: '',
+  });
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeAccounts = accounts.filter(a => activeAccountIds.has(a.id) && !a.isExpired);
 
@@ -195,16 +232,247 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
     }
   }, []);
 
-  // Upload Sharded File (Core Flow)
+  // Standard upload execution for a single file or multiple files
+  const executeStandardUpload = async (file: File, destinationAccountId: string): Promise<string> => {
+    const account = accounts.find(a => a.id === destinationAccountId);
+    if (!account) throw new Error('Selected destination account not found or expired');
+
+    const { uploadFileToDriveResumable } = await import('../services/googleService');
+    const uploadedFile = await uploadFileToDriveResumable(account.accessToken, file, (prog) => {
+      setUploadProgress(prog);
+    });
+
+    const shareUrl = uploadedFile?.webViewLink || (uploadedFile?.id ? `https://drive.google.com/file/d/${uploadedFile.id}/view` : '');
+    return shareUrl;
+  };
+
+  // Upload Multiple Files (Standard or Sharded Vault)
+  const handleBatchUploadFiles = async (files: File[]) => {
+    if (!files || files.length === 0) return;
+
+    if (activeAccounts.length === 0) {
+      setStatusMessage({
+        type: 'error',
+        text: 'Cannot upload files: No active accounts selected. Enable at least 1 account.',
+      });
+      return;
+    }
+
+    // If single file, pass through
+    if (files.length === 1) {
+      handleUploadFile(files[0]);
+      return;
+    }
+
+    // MULTI-FILE STANDARD MODE
+    if (uploadMode === 'standard') {
+      if (activeAccounts.length > 1) {
+        setPendingUploadFiles(files);
+        setMultiUploadPickerOpen(true);
+        return;
+      } else {
+        await executeStandardBatchUpload(files, 'single', activeAccounts[0].id);
+        return;
+      }
+    }
+
+    // MULTI-FILE VAULT (RAID-5) MODE
+    try {
+      setIsUploading(true);
+      setUploadProgress(0);
+      setStatusMessage(null);
+
+      const uploadedShareItems: MultiShareItem[] = [];
+      let latestRecords = [...shardedRecords];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setUploadStage(`Vault Sharding (${i + 1}/${files.length}): "${file.name}"...`);
+        setUploadProgress(0);
+
+        const manifest = await uploadShardedFile(file, activeAccounts, {
+          enableEncryption,
+          enableParity,
+          onProgress: (progress, cur, tot, stage) => {
+            setUploadProgress(progress);
+            setUploadChunkStats({ current: cur, total: tot });
+            if (stage) setUploadStage(`[${i + 1}/${files.length}] ${stage}`);
+          },
+        });
+
+        // Save manifest file to primary active Google Drive account if available
+        const primaryGoogle = activeAccounts.find(a => a.provider === 'google' || !a.provider) || activeAccounts[0];
+        let manifestDriveId: string | undefined = undefined;
+
+        try {
+          if (primaryGoogle.provider === 'google' || !primaryGoogle.provider) {
+            manifestDriveId = await saveManifestToDrive(manifest, primaryGoogle);
+          }
+        } catch (manifestErr) {
+          console.warn('Could not mirror manifest to Google Drive, saved to local IndexDB only:', manifestErr);
+        }
+
+        const newRecord: StoredManifestRecord = {
+          id: manifestDriveId || Math.random().toString(36).substring(2, 9),
+          manifestFileId: manifestDriveId,
+          manifest,
+          sourceAccountEmail: primaryGoogle.email || 'Multi-Cloud Array',
+        };
+
+        latestRecords = [newRecord, ...latestRecords];
+        setShardedRecords(latestRecords);
+        await set('matrix_frankenstein_shards', latestRecords);
+
+        // Generate magic link for this vaulted file
+        const magicLink = await createMagicShareLink(manifest, customClientId);
+        uploadedShareItems.push({
+          id: newRecord.id,
+          name: file.name,
+          url: magicLink,
+          accountEmail: primaryGoogle.email,
+          isVault: true,
+        });
+      }
+
+      setStatusMessage({
+        type: 'success',
+        text: `Successfully sharded all ${files.length} files across multi-cloud drives!`,
+      });
+
+      refreshStorageQuotas();
+
+      if (uploadedShareItems.length > 0) {
+        setMultiShareModal({
+          isOpen: true,
+          title: `Vault Sharded Files (${uploadedShareItems.length} Links Ready)`,
+          items: uploadedShareItems,
+        });
+      }
+    } catch (err: any) {
+      console.error('Batch Vault sharding failed:', err);
+      setStatusMessage({ type: 'error', text: `Multi-upload failed: ${err.message}` });
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+      setUploadStage('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // Batch Standard Upload Execution
+  const executeStandardBatchUpload = async (
+    files: File[],
+    allocation: 'single' | 'round-robin',
+    selectedAccountId?: string
+  ) => {
+    try {
+      setIsUploading(true);
+      setUploadProgress(0);
+      setStatusMessage(null);
+
+      const uploadedShareItems: MultiShareItem[] = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const targetAccountId =
+          allocation === 'round-robin'
+            ? activeAccounts[i % activeAccounts.length].id
+            : selectedAccountId || activeAccounts[0].id;
+
+        const targetAccount = accounts.find(a => a.id === targetAccountId);
+        setUploadStage(`Standard Upload (${i + 1}/${files.length}): "${file.name}" to ${targetAccount?.email || 'drive'}...`);
+        setUploadProgress(0);
+
+        const shareUrl = await executeStandardUpload(file, targetAccountId);
+
+        if (shareUrl) {
+          uploadedShareItems.push({
+            id: Math.random().toString(36).substring(2, 9),
+            name: file.name,
+            url: shareUrl,
+            accountEmail: targetAccount?.email,
+            isVault: false,
+          });
+        }
+      }
+
+      setUploadStage('Complete!');
+      setUploadProgress(100);
+
+      setStatusMessage({
+        type: 'success',
+        text: `Successfully uploaded ${files.length} files to Google Drive!`,
+      });
+
+      if (uploadedShareItems.length > 0) {
+        setMultiShareModal({
+          isOpen: true,
+          title: `Standard Upload Complete (${uploadedShareItems.length} Files)`,
+          items: uploadedShareItems,
+        });
+      }
+
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(0);
+      }, 1200);
+    } catch (e: any) {
+      setStatusMessage({ type: 'error', text: e.message || 'Standard batch upload failed' });
+      setIsUploading(false);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // Single Upload File (Standard or Sharded Vault)
   const handleUploadFile = async (file: File) => {
     if (!file) return;
 
     if (activeAccounts.length === 0) {
       setStatusMessage({
         type: 'error',
-        text: 'Cannot shard file: No active accounts selected. Enable at least 1 account.',
+        text: 'Cannot upload file: No active accounts selected. Enable at least 1 account.',
       });
       return;
+    }
+
+    // If Standard Mode: let user explicitly choose which account if multiple, or auto-use if only 1
+    if (uploadMode === 'standard') {
+      if (activeAccounts.length > 1) {
+        setPendingUploadFile(file);
+        setStandardPickerOpen(true);
+        return;
+      } else {
+        try {
+          setIsUploading(true);
+          setUploadProgress(0);
+          setUploadStage(`Uploading "${file.name}" to ${activeAccounts[0].email}...`);
+          setStatusMessage(null);
+          const shareUrl = await executeStandardUpload(file, activeAccounts[0].id);
+          setUploadStage('Complete!');
+          setUploadProgress(100);
+          setStatusMessage({
+            type: 'success',
+            text: `Successfully uploaded "${file.name}" to ${activeAccounts[0].email}`,
+          });
+          if (shareUrl) {
+            setStandardShareModal({
+              isOpen: true,
+              url: shareUrl,
+              filename: file.name,
+              accountEmail: activeAccounts[0].email,
+            });
+          }
+          setTimeout(() => {
+            setIsUploading(false);
+            setUploadProgress(0);
+          }, 1200);
+        } catch (e: any) {
+          setStatusMessage({ type: 'error', text: e.message || 'Standard upload failed' });
+          setIsUploading(false);
+        }
+        return;
+      }
     }
 
     try {
@@ -212,36 +480,6 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
       setUploadProgress(0);
       setUploadStage('Initializing distributed multi-cloud worker...');
       setStatusMessage(null);
-
-      
-    if (uploadMode === 'standard') {
-      try {
-        setIsUploading(true);
-        setUploadProgress(0);
-        setUploadStage('Directing standard upload to connected cloud...');
-        setStatusMessage(null);
-        
-        // Use first active account
-        const account = accounts.find(a => a.id === activeAccounts[0].id);
-        if (!account) throw new Error('Account not found');
-        
-        const { uploadFileToDriveResumable } = await import('../services/googleService');
-        await uploadFileToDriveResumable(account.accessToken, file, (prog) => {
-          setUploadProgress(prog);
-        });
-        
-        setUploadStage('Complete!');
-        setUploadProgress(100);
-        setTimeout(() => {
-          setIsUploading(false);
-          setUploadProgress(0);
-        }, 1500);
-      } catch (e: any) {
-         setStatusMessage({ type: 'error', text: e.message });
-         setIsUploading(false);
-      }
-      return;
-    }
 
       const manifest = await uploadShardedFile(file, activeAccounts, {
         enableEncryption,
@@ -499,8 +737,13 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
       onDrop={e => {
         e.preventDefault();
         setIsDraggingOver(false);
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-          handleUploadFile(e.dataTransfer.files[0]);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          const droppedFiles: File[] = Array.from(e.dataTransfer.files);
+          if (droppedFiles.length === 1) {
+            handleUploadFile(droppedFiles[0]);
+          } else {
+            handleBatchUploadFiles(droppedFiles);
+          }
         }
       }}
     >
@@ -584,41 +827,95 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
             <input
               type="file"
               ref={fileInputRef}
+              multiple
               className="hidden"
               onChange={e => {
-                if (e.target.files && e.target.files[0]) {
-                  handleUploadFile(e.target.files[0]);
+                if (e.target.files && e.target.files.length > 0) {
+                  const selectedFiles: File[] = Array.from(e.target.files);
+                  if (selectedFiles.length === 1) {
+                    handleUploadFile(selectedFiles[0]);
+                  } else {
+                    handleBatchUploadFiles(selectedFiles);
+                  }
                 }
               }}
             />
             
-            <div className="flex bg-slate-100 rounded-lg p-1 mr-4">
+            <div className="flex bg-slate-100 rounded-lg p-1 mr-4 border border-slate-200">
               <button
                 onClick={() => setUploadMode('standard')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${uploadMode === 'standard' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                title="Direct, fast single-cloud upload with native Google Drive link sharing"
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${uploadMode === 'standard' ? 'bg-white shadow-xs text-emerald-800 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
               >
-                Standard
+                <Cloud size={13} className={uploadMode === 'standard' ? 'text-emerald-600' : 'text-slate-400'} />
+                <span>Standard</span>
               </button>
               <button
                 onClick={() => setUploadMode('vault')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1 ${uploadMode === 'vault' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                title="Distributed Reed-Solomon RAID-5 sharded upload across multi-cloud accounts"
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${uploadMode === 'vault' ? 'bg-indigo-600 text-white shadow-xs font-bold' : 'text-slate-500 hover:text-slate-800'}`}
               >
-                Vault (RAID-5)
+                <ShieldCheck size={13} className={uploadMode === 'vault' ? 'text-white' : 'text-slate-400'} />
+                <span>Vault (RAID-5)</span>
               </button>
             </div>
 
             <button
               disabled={isUploading || activeAccounts.length === 0}
               onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+              className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-xs transition-all disabled:opacity-50 cursor-pointer ${uploadMode === 'vault' ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
             >
               {isUploading ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <UploadCloud className="w-3.5 h-3.5" />
               )}
-              {isUploading ? `Sharding... ${uploadProgress}%` : 'Upload Any File (Device)'}
+              {isUploading
+                ? (uploadMode === 'vault' ? `Sharding... ${uploadProgress}%` : `Uploading... ${uploadProgress}%`)
+                : (uploadMode === 'vault' ? 'Upload to Vault (RAID-5)' : 'Upload File (Standard)')}
             </button>
+          </div>
+        </div>
+
+        {/* Mode Explanation & Distinction Banner */}
+        <div className={`max-w-6xl mx-auto mt-4 px-4 py-3 rounded-xl border transition-all flex items-center justify-between gap-4 ${
+          uploadMode === 'standard'
+            ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+            : 'bg-indigo-50/70 border-indigo-200 text-indigo-950'
+        }`}>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+              uploadMode === 'standard' ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-100 text-indigo-700'
+            }`}>
+              {uploadMode === 'standard' ? <Cloud size={18} /> : <ShieldCheck size={18} />}
+            </div>
+            <div className="min-w-0 text-xs">
+              <div className="font-bold flex items-center gap-2">
+                <span>{uploadMode === 'standard' ? 'Standard Upload Mode' : 'Vault (RAID-5) Mode'}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                  uploadMode === 'standard' ? 'bg-emerald-200/70 text-emerald-800' : 'bg-indigo-200/70 text-indigo-800'
+                }`}>
+                  {uploadMode === 'standard' ? 'Universal Web Sharing' : 'Multi-Cloud Pooling & Parity'}
+                </span>
+              </div>
+              <p className={`text-[11px] mt-0.5 ${uploadMode === 'standard' ? 'text-emerald-800' : 'text-indigo-800'}`}>
+                {uploadMode === 'standard'
+                  ? 'Fast direct single-account upload. Automatically creates an instant universal Google Drive public link anyone can open with zero setup.'
+                  : 'Pools multi-account storage using client-side AES-256 encryption and Reed-Solomon RAID-5 parity recovery for sensitive data.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-2 shrink-0 text-[11px] font-medium">
+            {uploadMode === 'standard' ? (
+              <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold">
+                <Globe size={12} /> 1-Tap Public Link
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-indigo-700 font-semibold">
+                <Lock size={12} /> Zero-Knowledge Sharding
+              </span>
+            )}
           </div>
         </div>
 
@@ -689,12 +986,22 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                 )}
                 <span>{statusMessage.text}</span>
               </div>
-              <button
-                onClick={() => setStatusMessage(null)}
-                className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-              >
-                <X size={14} />
-              </button>
+              <div className="flex items-center gap-2">
+                {standardShareModal.url && statusMessage.type === 'success' && (
+                  <button
+                    onClick={() => setStandardShareModal(prev => ({ ...prev, isOpen: true }))}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-semibold text-[11px] hover:bg-emerald-700 transition-colors flex items-center gap-1 cursor-pointer"
+                  >
+                    <Globe size={11} /> 1-Tap Copy Link
+                  </button>
+                )}
+                <button
+                  onClick={() => setStatusMessage(null)}
+                  className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                >
+                  <X size={14} />
+                </button>
+              </div>
             </div>
           )}
 
@@ -867,37 +1174,134 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-4">
+                <div className="space-y-4">
+                  {/* Multi-Selection Action Toolbar for Vault Files */}
+                  <div className="flex items-center justify-between bg-white border border-slate-200 px-4 py-3 rounded-2xl shadow-xs">
+                    <div className="flex items-center gap-2.5">
+                      <input
+                        type="checkbox"
+                        checked={selectedVaultFileIds.size > 0 && selectedVaultFileIds.size === shardedRecords.length}
+                        ref={el => {
+                          if (el) {
+                            el.indeterminate = selectedVaultFileIds.size > 0 && selectedVaultFileIds.size < shardedRecords.length;
+                          }
+                        }}
+                        onChange={e => {
+                          if (e.target.checked) {
+                            setSelectedVaultFileIds(new Set(shardedRecords.map(r => r.id)));
+                          } else {
+                            setSelectedVaultFileIds(new Set());
+                          }
+                        }}
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                        id="select-all-vault"
+                      />
+                      <label htmlFor="select-all-vault" className="text-xs font-semibold text-slate-700 cursor-pointer select-none">
+                        {selectedVaultFileIds.size > 0
+                          ? `${selectedVaultFileIds.size} of ${shardedRecords.length} Selected`
+                          : `Select All (${shardedRecords.length})`}
+                      </label>
+                    </div>
+
+                    {selectedVaultFileIds.size > 0 && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={async () => {
+                            const matchingRecords = shardedRecords.filter(r => selectedVaultFileIds.has(r.id));
+                            const selectedItems: MultiShareItem[] = [];
+                            for (const r of matchingRecords) {
+                              try {
+                                await makeManifestChunksPublic(r.manifest, accounts);
+                              } catch (e) {
+                                console.warn('Could not make all chunks public', e);
+                              }
+                              const url = await createMagicShareLink(r.manifest, customClientId);
+                              selectedItems.push({
+                                id: r.id,
+                                name: r.manifest.filename,
+                                url,
+                                accountEmail: r.sourceAccountEmail,
+                                isVault: true,
+                              });
+                            }
+                            setMultiShareModal({
+                              isOpen: true,
+                              title: `Share ${selectedItems.length} Vaulted Files`,
+                              items: selectedItems,
+                            });
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                        >
+                          <Share2 size={13} />
+                          <span>Multi-Share ({selectedVaultFileIds.size})</span>
+                        </button>
+
+                        <button
+                          onClick={() => setSelectedVaultFileIds(new Set())}
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors text-xs"
+                          title="Deselect all"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4">
                   {shardedRecords.map(record => {
                     const isDownloadingThis = downloadingId === record.id;
                     const isVerifyingThis = verifyingId === record.id;
                     const integrity = integrityResults[record.id];
+                    const isSelected = selectedVaultFileIds.has(record.id);
 
                     return (
                       <div
                         key={record.id}
-                        className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all space-y-4"
+                        className={`bg-white border rounded-2xl p-5 shadow-sm hover:shadow-md transition-all space-y-4 ${
+                          isSelected ? 'border-indigo-500 ring-1 ring-indigo-500/50 bg-indigo-50/10' : 'border-slate-200/90'
+                        }`}
                       >
                         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                          <div className="flex items-start gap-3">
+                          <div className="flex items-start gap-3 min-w-0">
+                            {/* Checkbox */}
+                            <div className="pt-2 shrink-0">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={e => {
+                                  e.stopPropagation();
+                                  const next = new Set(selectedVaultFileIds);
+                                  if (e.target.checked) {
+                                    next.add(record.id);
+                                  } else {
+                                    next.delete(record.id);
+                                  }
+                                  setSelectedVaultFileIds(next);
+                                }}
+                                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                              />
+                            </div>
+
                             <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200/70 flex items-center justify-center shrink-0">
                               <FileText className="w-5 h-5" />
                             </div>
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <h3 className="text-sm font-bold text-slate-900 leading-tight">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                <h3 className="text-sm font-bold text-slate-900 leading-tight truncate max-w-[180px] sm:max-w-xs md:max-w-md" title={record.manifest.filename}>
                                   {record.manifest.filename}
                                 </h3>
-                                {record.manifest.isEncrypted && (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                    <Lock size={10} /> AES-256
-                                  </span>
-                                )}
-                                {record.manifest.parityChunk && (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
-                                    <LifeBuoy size={10} /> Multi-Cloud RAID-5
-                                  </span>
-                                )}
+                                <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                                  {record.manifest.isEncrypted && (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 whitespace-nowrap">
+                                      <Lock size={10} /> AES-256
+                                    </span>
+                                  )}
+                                  {record.manifest.parityChunk && (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap">
+                                      <LifeBuoy size={10} /> Multi-Cloud RAID-5
+                                    </span>
+                                  )}
+                                </div>
                               </div>
 
                               <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
@@ -916,49 +1320,84 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                             </div>
                           </div>
 
-                          {/* Actions */}
-                          <div className="flex items-center gap-2">
+                          {/* Actions: 1 Primary Button + Clean Mobile 3-Dots Menu */}
+                          <div className="flex items-center gap-2 shrink-0">
                             <button
                               disabled={isDownloadingThis}
                               onClick={() => handleReassembleDownload(record)}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-xs whitespace-nowrap"
                             >
                               {isDownloadingThis ? (
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                               ) : (
                                 <Download className="w-3.5 h-3.5" />
                               )}
-                              {isDownloadingThis ? `Reassembling ${downloadProgress}%` : 'Reassemble & Download'}
+                              {isDownloadingThis ? `Reassembling ${downloadProgress}%` : 'Download'}
                             </button>
 
-                            <button
-                              onClick={() => handleGenerateMagicLink(record)}
-                              title="Generate P2P Magic Link"
-                              className="p-1.5 rounded-lg text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200 transition-colors cursor-pointer"
-                            >
-                              <Share2 className="w-4 h-4" />
-                            </button>
+                            {/* Three-dot context menu */}
+                            <div className="relative">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveVaultMenuId(activeVaultMenuId === record.id ? null : record.id);
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer border border-slate-200"
+                                title="More options"
+                              >
+                                <MoreVertical size={15} />
+                              </button>
 
-                            <button
-                              disabled={isVerifyingThis}
-                              onClick={() => handleIntegrityCheck(record)}
-                              title="Check chunk integrity and fault tolerance"
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
-                            >
-                              {isVerifyingThis ? (
-                                <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
-                              ) : (
-                                <ShieldCheck className="w-4 h-4" />
+                              {activeVaultMenuId === record.id && (
+                                <>
+                                  <div
+                                    className="fixed inset-0 z-30"
+                                    onClick={() => setActiveVaultMenuId(null)}
+                                  />
+                                  <div className="absolute right-0 top-full mt-1 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100">
+                                    <button
+                                      onClick={() => {
+                                        setActiveVaultMenuId(null);
+                                        handleGenerateMagicLink(record);
+                                      }}
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left cursor-pointer"
+                                    >
+                                      <Share2 size={13} className="text-indigo-600 shrink-0" />
+                                      <span>Share P2P Magic Link</span>
+                                    </button>
+
+                                    <button
+                                      disabled={isVerifyingThis}
+                                      onClick={() => {
+                                        setActiveVaultMenuId(null);
+                                        handleIntegrityCheck(record);
+                                      }}
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-emerald-700 transition-colors text-left cursor-pointer"
+                                    >
+                                      {isVerifyingThis ? (
+                                        <Loader2 size={13} className="animate-spin text-emerald-600 shrink-0" />
+                                      ) : (
+                                        <ShieldCheck size={13} className="text-emerald-600 shrink-0" />
+                                      )}
+                                      <span>Verify RAID-5 Integrity</span>
+                                    </button>
+
+                                    <div className="h-px bg-slate-100 my-1" />
+
+                                    <button
+                                      onClick={() => {
+                                        setActiveVaultMenuId(null);
+                                        handleDeleteShardedFile(record);
+                                      }}
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors text-left cursor-pointer"
+                                    >
+                                      <Trash2 size={13} className="text-red-500 shrink-0" />
+                                      <span>Purge All Cloud Shards</span>
+                                    </button>
+                                  </div>
+                                </>
                               )}
-                            </button>
-
-                            <button
-                              onClick={() => handleDeleteShardedFile(record)}
-                              title="Purge all shards across all cloud providers"
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 border border-slate-200 transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            </div>
                           </div>
                         </div>
 
@@ -995,6 +1434,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                       </div>
                     );
                   })}
+                  </div>
                 </div>
               )}
             </div>
@@ -1002,73 +1442,208 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
 
           {/* TAB 2: ALL RAW DRIVE FILES */}
           {activeTab === 'all' && (
-            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm">
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm space-y-3">
+              {filteredFiles.length > 0 && (
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                  <div className="flex items-center gap-2.5">
+                    <input
+                      type="checkbox"
+                      checked={selectedRawFileIds.size > 0 && selectedRawFileIds.size === filteredFiles.length}
+                      ref={el => {
+                        if (el) {
+                          el.indeterminate = selectedRawFileIds.size > 0 && selectedRawFileIds.size < filteredFiles.length;
+                        }
+                      }}
+                      onChange={e => {
+                        if (e.target.checked) {
+                          setSelectedRawFileIds(new Set(filteredFiles.map(f => f.id)));
+                        } else {
+                          setSelectedRawFileIds(new Set());
+                        }
+                      }}
+                      className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                      id="select-all-raw"
+                    />
+                    <label htmlFor="select-all-raw" className="text-xs font-semibold text-slate-700 cursor-pointer select-none">
+                      {selectedRawFileIds.size > 0
+                        ? `${selectedRawFileIds.size} of ${filteredFiles.length} Selected`
+                        : `Select All (${filteredFiles.length})`}
+                    </label>
+                  </div>
+
+                  {selectedRawFileIds.size > 0 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          const selectedFiles = filteredFiles.filter(f => selectedRawFileIds.has(f.id));
+                          // Ensure files are publicly accessible
+                          const items: MultiShareItem[] = [];
+                          for (const f of selectedFiles) {
+                            try {
+                              const acc = accounts.find(a => a.email === f.accountEmail);
+                              if (acc) {
+                                const { makeFilePublic } = await import('../services/googleService');
+                                await makeFilePublic(f.id, acc.accessToken);
+                              }
+                            } catch (e) {
+                              console.warn('Could not set permissions for file', f.name, e);
+                            }
+                            const shareUrl = f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`;
+                            items.push({
+                              id: f.id,
+                              name: f.name,
+                              url: shareUrl,
+                              accountEmail: f.accountEmail,
+                              isVault: false,
+                            });
+                          }
+                          setMultiShareModal({
+                            isOpen: true,
+                            title: `Share ${items.length} Drive Files`,
+                            items,
+                          });
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                      >
+                        <Share2 size={13} />
+                        <span>Multi-Share ({selectedRawFileIds.size})</span>
+                      </button>
+
+                      <button
+                        onClick={() => setSelectedRawFileIds(new Set())}
+                        className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors text-xs"
+                        title="Deselect all"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-3">
                 {filteredFiles.length === 0 ? (
                   <div className="text-center py-10 text-xs text-slate-400">No raw drive files found.</div>
                 ) : (
-                  filteredFiles.map(file => (
-                    <div
-                      key={file.id}
-                      className="flex items-center justify-between p-3 rounded-xl border border-slate-100 hover:bg-slate-50 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <FileText className="w-4 h-4 text-slate-400" />
-                        <div>
-                          <div className="text-xs font-semibold text-slate-800">{file.name}</div>
-                          <div className="text-[11px] text-slate-400">{file.accountEmail}</div>
-                        </div>
-                      </div>
-                      
-                      <div className="flex items-center gap-2">
-                        {onAttachToEmail && (
-                          <button
-                            onClick={() => onAttachToEmail(file)}
-                            className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-semibold transition-colors flex items-center gap-1"
-                          >
-                            <Mail size={12} /> Attach
-                          </button>
-                        )}
-                        <button
-                            onClick={async () => {
-                              try {
-                                const acc = accounts.find(a => a.email === file.accountEmail);
-                                if (!acc) return;
-                                const { makeFilePublic } = await import('../services/googleService');
-                                await makeFilePublic(file.id, acc.accessToken);
-                                setMagicLinkModal({
-                                  isOpen: true,
-                                  url: file.webViewLink,
-                                  filename: file.name
-                                });
-                              } catch(e) {
-                                alert("Failed to generate link");
+                  filteredFiles.map(file => {
+                    const isSelected = selectedRawFileIds.has(file.id);
+                    return (
+                      <div
+                        key={file.id}
+                        className={`relative flex items-center justify-between p-3 rounded-xl border transition-colors ${
+                          isSelected ? 'border-emerald-500 bg-emerald-50/20 ring-1 ring-emerald-500/50' : 'border-slate-100 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0 pr-2">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={e => {
+                              e.stopPropagation();
+                              const next = new Set(selectedRawFileIds);
+                              if (e.target.checked) {
+                                next.add(file.id);
+                              } else {
+                                next.delete(file.id);
                               }
+                              setSelectedRawFileIds(next);
                             }}
-                            className="text-xs px-2 py-1 bg-green-50 hover:bg-green-100 text-green-700 rounded-lg font-semibold transition-colors flex items-center gap-1 cursor-pointer"
-                          >
-                            <ExternalLink size={12} /> Share
-                          </button>
-                        {setTransferFile && (
-                          <button
-                            onClick={() => setTransferFile(file)}
-                            className="text-xs px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-semibold transition-colors flex items-center gap-1"
-                          >
-                            <ArrowRight size={12} /> Transfer
-                          </button>
-                        )}
+                            className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer shrink-0"
+                          />
+                          <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-slate-800 truncate max-w-[200px] sm:max-w-[340px]">{file.name}</div>
+                            <div className="text-[11px] text-slate-400 truncate">{file.accountEmail}</div>
+                          </div>
+                        </div>
+                      
+                      <div className="flex items-center gap-2 shrink-0">
                         <a
                           href={file.webViewLink}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-xs text-blue-600 hover:underline flex items-center gap-1 px-2 py-1"
+                          className="text-xs text-blue-600 hover:text-blue-800 hover:bg-blue-50 font-medium flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-transparent hover:border-blue-100 transition-colors"
                         >
-                          Open <ExternalLink size={11} />
+                          Open <ExternalLink size={12} />
                         </a>
+
+                        {/* Three-dot context menu */}
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveFileMenuId(activeFileMenuId === file.id ? null : file.id);
+                            }}
+                            className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+                            title="More options"
+                          >
+                            <MoreVertical size={15} />
+                          </button>
+
+                          {activeFileMenuId === file.id && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-30"
+                                onClick={() => setActiveFileMenuId(null)}
+                              />
+                              <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100">
+                                <button
+                                  onClick={async () => {
+                                    setActiveFileMenuId(null);
+                                    try {
+                                      const acc = accounts.find(a => a.email === file.accountEmail);
+                                      if (!acc) return;
+                                      const { makeFilePublic } = await import('../services/googleService');
+                                      await makeFilePublic(file.id, acc.accessToken);
+                                      setMagicLinkModal({
+                                        isOpen: true,
+                                        url: file.webViewLink,
+                                        filename: file.name
+                                      });
+                                    } catch(e) {
+                                      alert("Failed to generate link");
+                                    }
+                                  }}
+                                  className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-emerald-700 transition-colors text-left cursor-pointer"
+                                >
+                                  <ExternalLink size={13} className="text-emerald-600" />
+                                  <span>Share Public Link</span>
+                                </button>
+
+                                {setTransferFile && (
+                                  <button
+                                    onClick={() => {
+                                      setActiveFileMenuId(null);
+                                      setTransferFile(file);
+                                    }}
+                                    className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-700 transition-colors text-left cursor-pointer"
+                                  >
+                                    <ArrowRight size={13} className="text-indigo-600" />
+                                    <span>Transfer to Cloud</span>
+                                  </button>
+                                )}
+
+                                {onAttachToEmail && (
+                                  <button
+                                    onClick={() => {
+                                      setActiveFileMenuId(null);
+                                      onAttachToEmail(file);
+                                    }}
+                                    className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors text-left cursor-pointer"
+                                  >
+                                    <Mail size={13} className="text-slate-500" />
+                                    <span>Attach to Email</span>
+                                  </button>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </div>
 
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -1181,6 +1756,61 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Standard Upload Destination Account Selector Modal */}
+      <StandardUploadPickerModal
+        isOpen={standardPickerOpen}
+        onClose={() => {
+          setStandardPickerOpen(false);
+          setPendingUploadFile(null);
+        }}
+        file={pendingUploadFile}
+        accounts={activeAccounts}
+        onSelectAccount={async (accountId) => {
+          const fileToUpload = pendingUploadFile;
+          setStandardPickerOpen(false);
+          setPendingUploadFile(null);
+          if (fileToUpload) {
+            await executeStandardUpload(fileToUpload, accountId);
+          }
+        }}
+      />
+
+      {/* Standard Upload Instant Share Modal */}
+      <StandardShareModal
+        isOpen={standardShareModal.isOpen}
+        onClose={() => setStandardShareModal(prev => ({ ...prev, isOpen: false }))}
+        url={standardShareModal.url}
+        filename={standardShareModal.filename}
+        accountEmail={standardShareModal.accountEmail}
+      />
+
+      {/* Multi-Share Modal (Both Vault P2P links and Drive Web links) */}
+      <MultiShareModal
+        isOpen={multiShareModal.isOpen}
+        onClose={() => setMultiShareModal(prev => ({ ...prev, isOpen: false }))}
+        title={multiShareModal.title}
+        items={multiShareModal.items}
+      />
+
+      {/* Standard Multi-File Upload Destination Account Picker Modal */}
+      <StandardMultiUploadPickerModal
+        isOpen={multiUploadPickerOpen}
+        onClose={() => {
+          setMultiUploadPickerOpen(false);
+          setPendingUploadFiles([]);
+        }}
+        files={pendingUploadFiles}
+        accounts={activeAccounts}
+        onConfirm={async (allocation, selectedAccountId) => {
+          const filesToUpload = pendingUploadFiles;
+          setMultiUploadPickerOpen(false);
+          setPendingUploadFiles([]);
+          if (filesToUpload.length > 0) {
+            await executeStandardBatchUpload(filesToUpload, allocation, selectedAccountId);
+          }
+        }}
+      />
     </div>
   );
 };
