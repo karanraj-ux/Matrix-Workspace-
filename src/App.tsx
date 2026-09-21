@@ -24,6 +24,10 @@ import { GlobalSearchView } from './views/GlobalSearchView';
 import { AutomationView } from './views/AutomationView';
 import { executeAutomations } from './services/automationEngine';
 
+import { decodeCompactOrLegacyManifest } from './services/compactMagicCodec';
+import { PublicMagicDownloadModal } from './components/PublicMagicDownloadModal';
+import { ShardManifest } from './services/shardingService';
+
 export default function App() {
   const {
     isInitializing,
@@ -48,6 +52,8 @@ export default function App() {
 
   const [pendingMagicHash, setPendingMagicHash] = useState('');
   const [magicDetectedFilename, setMagicDetectedFilename] = useState<string>('');
+  const [pendingMagicManifest, setPendingMagicManifest] = useState<ShardManifest | null>(null);
+  const [isPublicDownloadModalOpen, setIsPublicDownloadModalOpen] = useState(false);
   const [isGsiReady, setIsGsiReady] = useState(false);
   const [authConnectingStage, setAuthConnectingStage] = useState<string>('');
   const preInitializedTokenClientRef = useRef<any>(null);
@@ -72,27 +78,25 @@ export default function App() {
   useEffect(() => {
     let resolvedClientId = customClientId?.trim() || '';
 
-    if (typeof window !== 'undefined' && window.location.hash.includes('magic=')) {
+    if (typeof window !== 'undefined' && (window.location.hash.includes('magic=') || window.location.hash.includes('m='))) {
       const hash = window.location.hash;
       setPendingMagicHash(hash);
       
-      // Synchronously parse magic link hash payload
+      // Parse magic link hash payload (compact #m= or legacy #magic=)
       try {
-        const hashVal = hash.split('magic=')[1];
-        if (hashVal) {
-          const decoded = decodeURIComponent(hashVal);
-          const jsonStr = atob(decoded);
-          const payload = JSON.parse(jsonStr);
-          if (payload.filename) {
-            setMagicDetectedFilename(payload.filename);
+        const decoded = decodeCompactOrLegacyManifest(hash);
+        if (decoded) {
+          setPendingMagicManifest(decoded);
+          if (decoded.filename) {
+            setMagicDetectedFilename(decoded.filename);
           }
-          if (payload.magicClientId) {
-            resolvedClientId = payload.magicClientId.trim();
+          if ((decoded as any).magicClientId) {
+            resolvedClientId = (decoded as any).magicClientId.trim();
             setCustomClientId(resolvedClientId);
           }
         }
       } catch (e) {
-        console.warn('Could not parse magic link client ID synchronously', e);
+        console.warn('Could not parse magic link manifest synchronously', e);
       }
 
       // If we are already logged in, automatically switch to drive view
@@ -728,24 +732,36 @@ export default function App() {
             </p>
             
             {pendingMagicHash && (
-              <div className="bg-gradient-to-r from-blue-950/80 via-indigo-950/70 to-purple-950/80 border border-blue-500/40 rounded-2xl p-5 text-left max-w-lg mx-auto shadow-xl backdrop-blur-md">
+              <div className="bg-gradient-to-r from-blue-950/80 via-indigo-950/70 to-purple-950/80 border border-blue-500/40 rounded-2xl p-5 text-left max-w-lg mx-auto shadow-xl backdrop-blur-md space-y-3">
                 <div className="flex items-center justify-between gap-2 text-blue-400 font-bold text-sm">
                   <div className="flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-amber-400" /> Decentralized Magic Link Detected
                   </div>
-                  <span className="text-[10px] font-mono bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full border border-blue-400/30">
-                    Ready
+                  <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-400/30">
+                    Zero-Auth Ready
                   </span>
                 </div>
                 {magicDetectedFilename && (
-                  <div className="mt-2.5 px-3 py-2 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
+                  <div className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
                     <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
                     <span className="text-xs font-semibold text-white truncate">{magicDetectedFilename}</span>
                   </div>
                 )}
-                <p className="text-xs text-neutral-300 mt-2 leading-relaxed">
-                  Someone shared an encrypted, sharded file with you. Click below to connect Google Drive and reassemble it directly in your browser.
+                <p className="text-xs text-neutral-300 leading-relaxed">
+                  Someone shared an encrypted, sharded file with you. You can download and decrypt it instantly without signing in or providing client credentials!
                 </p>
+
+                {pendingMagicManifest && (
+                  <div className="pt-1">
+                    <button
+                      onClick={() => setIsPublicDownloadModalOpen(true)}
+                      className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Download size={15} />
+                      <span>Instant Download & Decrypt (No Sign-In Required)</span>
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             
@@ -1225,6 +1241,14 @@ export default function App() {
         showUpgradeModal={showUpgradeModal} 
         setShowUpgradeModal={setShowUpgradeModal} 
         setCurrentView={setCurrentView} 
+      />
+
+      {/* Zero-Auth Direct P2P Magic Download Modal */}
+      <PublicMagicDownloadModal
+        isOpen={isPublicDownloadModalOpen}
+        onClose={() => setIsPublicDownloadModalOpen(false)}
+        manifest={pendingMagicManifest}
+        accounts={accounts}
       />
 
     </div>

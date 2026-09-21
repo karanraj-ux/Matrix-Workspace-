@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { X, Check, Copy, ExternalLink, Globe, HardDrive, Share2, Layers } from 'lucide-react';
+import { X, Check, Copy, ExternalLink, Globe, HardDrive, Share2, Layers, QrCode } from 'lucide-react';
+import { QRCodeCard } from './QRCodeCard';
 
 export interface MultiShareItem {
   id: string;
@@ -24,6 +25,7 @@ export const MultiShareModal: React.FC<MultiShareModalProps> = ({
 }) => {
   const [copiedAll, setCopiedAll] = useState(false);
   const [copiedItemIndex, setCopiedItemIndex] = useState<number | null>(null);
+  const [activeQrIndex, setActiveQrIndex] = useState<number | null>(items.length === 1 ? 0 : null);
 
   if (!isOpen || items.length === 0) return null;
 
@@ -127,6 +129,18 @@ export const MultiShareModal: React.FC<MultiShareModalProps> = ({
 
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
+                      onClick={() => setActiveQrIndex(activeQrIndex === idx ? null : idx)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer ${
+                        activeQrIndex === idx
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                      }`}
+                      title="Show QR code for mobile scanning"
+                    >
+                      <QrCode size={12} />
+                      <span>QR</span>
+                    </button>
+                    <button
                       onClick={() => handleCopySingle(item.url, idx)}
                       className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer ${
                         isCopied
@@ -160,6 +174,16 @@ export const MultiShareModal: React.FC<MultiShareModalProps> = ({
                     className="w-full bg-transparent text-[11px] font-mono text-slate-600 select-all focus:outline-none truncate"
                   />
                 </div>
+
+                {activeQrIndex === idx && (
+                  <div className="pt-1 animate-in fade-in zoom-in-95 duration-150">
+                    <QRCodeCard
+                      url={item.url}
+                      title={`Scan to open "${item.name}"`}
+                      subtitle="Point smartphone camera to open this link instantly"
+                    />
+                  </div>
+                )}
               </div>
             );
           })}

@@ -37,6 +37,8 @@ import { StandardUploadPickerModal } from '../components/StandardUploadPickerMod
 import { StandardShareModal } from '../components/StandardShareModal';
 import { MultiShareModal, MultiShareItem } from '../components/MultiShareModal';
 import { StandardMultiUploadPickerModal } from '../components/StandardMultiUploadPickerModal';
+import { MobileActionSheet, MobileActionSheetItem } from '../components/MobileActionSheet';
+import { QRCodeCard } from '../components/QRCodeCard';
 
 interface DriveViewProps {
   customClientId?: string;
@@ -133,6 +135,18 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
   // Active Vault Shard Dropdown Menu
   const [activeVaultMenuId, setActiveVaultMenuId] = useState<string | null>(null);
 
+  // Mobile Slide-Up Action Sheet State
+  const [mobileSheet, setMobileSheet] = useState<{
+    isOpen: boolean;
+    title: string;
+    subtitle?: string;
+    items: MobileActionSheetItem[];
+  }>({
+    isOpen: false,
+    title: '',
+    items: [],
+  });
+
   // Multi-Selection State for Bulk Actions & Sharing
   const [selectedVaultFileIds, setSelectedVaultFileIds] = useState<Set<string>>(new Set());
   const [selectedRawFileIds, setSelectedRawFileIds] = useState<Set<string>>(new Set());
@@ -158,11 +172,13 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
     url: string;
     filename: string;
     accountEmail: string;
+    title?: string;
   }>({
     isOpen: false,
     url: '',
     filename: '',
     accountEmail: '',
+    title: 'Public Link & QR Code',
   });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -202,7 +218,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
 
     // Handle URL Hash Magic Link if present on page load
   useEffect(() => {
-    if (typeof window !== "undefined" && window.location.hash.includes("magic=")) {
+    if (typeof window !== "undefined" && (window.location.hash.includes("magic=") || window.location.hash.includes("m="))) {
       const decoded = decodeMagicShareLink(window.location.hash);
       if (decoded) {
         // Automatically import it
@@ -1340,6 +1356,47 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  // If mobile screen width (< 640px), open MobileActionSheet
+                                  if (typeof window !== 'undefined' && window.innerWidth < 640) {
+                                    setMobileSheet({
+                                      isOpen: true,
+                                      title: record.manifest.filename,
+                                      subtitle: `${(record.manifest.totalSize / (1024 * 1024)).toFixed(2)} MB • ${record.manifest.totalChunks} Chunks`,
+                                      items: [
+                                        {
+                                          icon: <Download size={18} className="text-emerald-600" />,
+                                          label: 'Download & Decrypt',
+                                          sublabel: 'Reassemble chunks in browser',
+                                          onClick: () => handleReassembleDownload(record),
+                                        },
+                                        {
+                                          icon: <Share2 size={18} className="text-indigo-600" />,
+                                          label: 'Share P2P Magic Link',
+                                          sublabel: 'Self-contained zero-auth link',
+                                          onClick: () => handleGenerateMagicLink(record),
+                                        },
+                                        {
+                                          icon: isVerifyingThis ? (
+                                            <Loader2 size={18} className="animate-spin text-emerald-600" />
+                                          ) : (
+                                            <ShieldCheck size={18} className="text-emerald-600" />
+                                          ),
+                                          label: 'Verify RAID-5 Integrity',
+                                          sublabel: 'Check chunk health across drives',
+                                          disabled: isVerifyingThis,
+                                          onClick: () => handleIntegrityCheck(record),
+                                        },
+                                        {
+                                          icon: <Trash2 size={18} className="text-red-500" />,
+                                          label: 'Purge All Cloud Shards',
+                                          sublabel: 'Permanently remove from providers',
+                                          destructive: true,
+                                          onClick: () => handleDeleteShardedFile(record),
+                                        },
+                                      ],
+                                    });
+                                    return;
+                                  }
                                   setActiveVaultMenuId(activeVaultMenuId === record.id ? null : record.id);
                                 }}
                                 className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer border border-slate-200"
@@ -1348,13 +1405,14 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                 <MoreVertical size={15} />
                               </button>
 
+                              {/* Desktop dropdown only */}
                               {activeVaultMenuId === record.id && (
                                 <>
                                   <div
                                     className="fixed inset-0 z-30"
                                     onClick={() => setActiveVaultMenuId(null)}
                                   />
-                                  <div className="absolute right-0 top-full mt-1 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100">
+                                  <div className="hidden sm:block absolute right-0 top-full mt-1 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100">
                                     <button
                                       onClick={() => {
                                         setActiveVaultMenuId(null);
@@ -1572,6 +1630,58 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
+                              if (typeof window !== 'undefined' && window.innerWidth < 640) {
+                                const acc = accounts.find(a => a.email === file.accountEmail);
+                                const sheetItems: MobileActionSheetItem[] = [
+                                  {
+                                    icon: <ExternalLink size={18} className="text-emerald-600" />,
+                                    label: 'Share Public Link',
+                                    sublabel: 'Allow public viewing via Drive',
+                                    onClick: async () => {
+                                      try {
+                                        if (!acc) return;
+                                        const { makeFilePublic } = await import('../services/googleService');
+                                        await makeFilePublic(file.id, acc.accessToken);
+                                        setStandardShareModal({
+                                          isOpen: true,
+                                          url: file.webViewLink,
+                                          filename: file.name,
+                                          accountEmail: file.accountEmail || acc.email,
+                                          title: 'Share Google Drive File'
+                                        });
+                                      } catch(e) {
+                                        alert("Failed to generate link");
+                                      }
+                                    },
+                                  },
+                                ];
+
+                                if (setTransferFile) {
+                                  sheetItems.push({
+                                    icon: <ArrowRight size={18} className="text-indigo-600" />,
+                                    label: 'Transfer to Cloud',
+                                    sublabel: 'Move or copy to another drive',
+                                    onClick: () => setTransferFile(file),
+                                  });
+                                }
+
+                                if (onAttachToEmail) {
+                                  sheetItems.push({
+                                    icon: <Mail size={18} className="text-slate-600" />,
+                                    label: 'Attach to Email',
+                                    sublabel: 'Compose email with drive attachment',
+                                    onClick: () => onAttachToEmail(file),
+                                  });
+                                }
+
+                                setMobileSheet({
+                                  isOpen: true,
+                                  title: file.name,
+                                  subtitle: file.accountEmail,
+                                  items: sheetItems,
+                                });
+                                return;
+                              }
                               setActiveFileMenuId(activeFileMenuId === file.id ? null : file.id);
                             }}
                             className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
@@ -1586,7 +1696,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                 className="fixed inset-0 z-30"
                                 onClick={() => setActiveFileMenuId(null)}
                               />
-                              <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100">
+                              <div className="hidden sm:block absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100">
                                 <button
                                   onClick={async () => {
                                     setActiveFileMenuId(null);
@@ -1595,10 +1705,12 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                       if (!acc) return;
                                       const { makeFilePublic } = await import('../services/googleService');
                                       await makeFilePublic(file.id, acc.accessToken);
-                                      setMagicLinkModal({
+                                      setStandardShareModal({
                                         isOpen: true,
                                         url: file.webViewLink,
-                                        filename: file.name
+                                        filename: file.name,
+                                        accountEmail: file.accountEmail || acc.email,
+                                        title: 'Share Google Drive File'
                                       });
                                     } catch(e) {
                                       alert("Failed to generate link");
@@ -1685,11 +1797,18 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                 with zero server proxy!
               </p>
 
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] break-all text-slate-700 max-h-32 overflow-y-auto">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] break-all text-slate-700 max-h-24 overflow-y-auto">
                 {magicLinkModal.url}
               </div>
 
-              <div className="flex justify-end gap-2 pt-2">
+              {/* QR Code Quick Scan for Mobile Phones */}
+              <QRCodeCard
+                url={magicLinkModal.url}
+                title="Scan to Open & Download on Mobile"
+                subtitle="Open this self-contained decentralized link instantly with any phone camera"
+              />
+
+              <div className="flex justify-end gap-2 pt-1">
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(magicLinkModal.url);
@@ -1783,6 +1902,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
         url={standardShareModal.url}
         filename={standardShareModal.filename}
         accountEmail={standardShareModal.accountEmail}
+        title={standardShareModal.title}
       />
 
       {/* Multi-Share Modal (Both Vault P2P links and Drive Web links) */}
@@ -1810,6 +1930,15 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
             await executeStandardBatchUpload(filesToUpload, allocation, selectedAccountId);
           }
         }}
+      />
+
+      {/* Responsive Mobile Slide-Up Action Sheet */}
+      <MobileActionSheet
+        isOpen={mobileSheet.isOpen}
+        onClose={() => setMobileSheet(prev => ({ ...prev, isOpen: false }))}
+        title={mobileSheet.title}
+        subtitle={mobileSheet.subtitle}
+        items={mobileSheet.items}
       />
     </div>
   );

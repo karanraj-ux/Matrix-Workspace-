@@ -304,15 +304,28 @@ export const downloadShardedFile = async (
     let acc = accounts.find(a => a.id === chunk.accountId);
     if (!acc || acc.isExpired) {
       // Magic Link scenario: We don't own the chunk's account.
-      // Borrow the first active account of the SAME provider (or any provider) to supply an OAuth token for the public read.
-      // Note: Google Drive API requires ANY valid OAuth token to download a public file via the REST API.
+      // Check if user has an active account to provide bearer auth:
       acc = accounts.find(a => !a.isExpired && a.provider === chunk.provider) || accounts.find(a => !a.isExpired);
-      if (!acc) {
-        throw new Error(`Please connect an account to download this public file.`);
-      }
     }
 
-    const rawBuf = await downloadChunkFromProvider(acc, chunk.driveFileId, chunk.downloadPath);
+    let rawBuf: ArrayBuffer;
+    if (acc && !acc.isExpired) {
+      rawBuf = await downloadChunkFromProvider(acc, chunk.driveFileId, chunk.downloadPath);
+    } else if (chunk.provider === 'google' || !chunk.provider) {
+      // Public Zero-Auth direct fallback via Google Drive public web content
+      const directPublicUrl = `https://drive.usercontent.google.com/download?id=${chunk.driveFileId}&export=download&authuser=0`;
+      let res = await fetch(directPublicUrl);
+      if (!res.ok) {
+        // Alternative public API endpoint
+        res = await fetch(`https://www.googleapis.com/drive/v3/files/${chunk.driveFileId}?alt=media`);
+      }
+      if (!res.ok) {
+        throw new Error(`Public chunk download failed (HTTP ${res.status}). Ensure uploader shared public permissions.`);
+      }
+      rawBuf = await res.arrayBuffer();
+    } else {
+      throw new Error(`Please connect an account to download this chunk.`);
+    }
 
     if (chunk.cryptoMeta?.encrypted && masterKey) {
       return await decryptChunkWorker(
@@ -390,42 +403,29 @@ export const downloadShardedFile = async (
   return new Blob(finalBlobs, { type: manifest.mimeType || 'application/octet-stream' });
 };
 
+import { encodeCompactManifest, decodeCompactOrLegacyManifest } from './compactMagicCodec';
+
 /**
  * Generate a self-contained P2P Magic Link with embedded decryption key.
+ * Uses high-efficiency compact base64url encoding for short, clean URLs.
  */
 export const createMagicShareLink = async (
   manifest: ShardManifest,
   clientId?: string
 ): Promise<string> => {
   const masterKey = manifest.isEncrypted ? await getOrGenerateMasterKey() : '';
-  const exportPayload: any = {
-    ...manifest,
-    magicKey: masterKey,
-  };
-  if (clientId) {
-    exportPayload.magicClientId = clientId;
-  }
-  const jsonStr = JSON.stringify(exportPayload);
-  const base64 = btoa(encodeURIComponent(jsonStr));
+  const compactHash = encodeCompactManifest(manifest, masterKey, clientId);
   const url = new URL(window.location.href);
   url.search = '';
-  url.hash = `magic=${base64}`;
+  url.hash = `m=${compactHash}`;
   return url.toString();
 };
 
 /**
- * Decode a Magic Link from URL hash.
+ * Decode a Magic Link from URL hash (supports both compact #m= and legacy #magic=).
  */
 export const decodeMagicShareLink = (hash: string): ShardManifest | null => {
-  try {
-    const match = hash.match(/magic=([A-Za-z0-9+/=]+)/);
-    if (!match || !match[1]) return null;
-    const jsonStr = decodeURIComponent(atob(match[1]));
-    return JSON.parse(jsonStr) as ShardManifest;
-  } catch (e) {
-    console.error('Failed to parse magic link', e);
-    return null;
-  }
+  return decodeCompactOrLegacyManifest(hash);
 };
 
 /**
