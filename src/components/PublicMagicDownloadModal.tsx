@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Download, Sparkles, Shield, CheckCircle2, AlertCircle, Loader2, X, HardDrive } from 'lucide-react';
+import { Download, Sparkles, Shield, CheckCircle2, AlertCircle, Loader2, X, HardDrive, LogIn, RotateCcw } from 'lucide-react';
 import { ShardManifest, downloadShardedFile } from '../services/shardingService';
 import { AccountToken } from '../types';
 
@@ -10,6 +10,7 @@ interface PublicMagicDownloadModalProps {
   manifest: ShardManifest | null;
   accounts: AccountToken[];
   onImportSuccess?: () => void;
+  onConnectAccount?: () => void;
 }
 
 export const PublicMagicDownloadModal: React.FC<PublicMagicDownloadModalProps> = ({
@@ -18,6 +19,7 @@ export const PublicMagicDownloadModal: React.FC<PublicMagicDownloadModalProps> =
   manifest,
   accounts,
   onImportSuccess,
+  onConnectAccount,
 }) => {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -29,6 +31,7 @@ export const PublicMagicDownloadModal: React.FC<PublicMagicDownloadModalProps> =
 
   const fileSizeMb = (manifest.totalSize / (1024 * 1024)).toFixed(2);
   const hasParity = !!manifest.parityChunk;
+  const hasConnectedAccount = accounts.some(a => !a.isExpired);
 
   const handleStartDownload = async () => {
     try {
@@ -168,9 +171,29 @@ export const PublicMagicDownloadModal: React.FC<PublicMagicDownloadModalProps> =
           )}
 
           {errorMessage && (
-            <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs flex items-start gap-2.5 font-medium">
-              <AlertCircle size={16} className="text-red-600 shrink-0 mt-0.5" />
-              <div className="min-w-0 flex-1">{errorMessage}</div>
+            <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs space-y-2">
+              <div className="flex items-start gap-2.5 font-medium">
+                <AlertCircle size={16} className="text-red-600 shrink-0 mt-0.5" />
+                <div className="min-w-0 flex-1">{errorMessage}</div>
+              </div>
+
+              {onConnectAccount && !hasConnectedAccount && (
+                <div className="pt-1.5 border-t border-red-200/70 flex flex-col gap-1.5">
+                  <p className="text-[11px] text-red-700">
+                    If this file is private or requires Google authorization, connecting an account allows instant authenticated retrieval:
+                  </p>
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onConnectAccount();
+                    }}
+                    className="w-full py-2 px-3 rounded-xl bg-white hover:bg-red-50 border border-red-300 text-red-900 font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                  >
+                    <LogIn size={13} className="text-red-600" />
+                    <span>Sign In with Google to Download</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -190,6 +213,11 @@ export const PublicMagicDownloadModal: React.FC<PublicMagicDownloadModalProps> =
                 <>
                   <Download size={16} />
                   <span>Download Again</span>
+                </>
+              ) : errorMessage ? (
+                <>
+                  <RotateCcw size={16} />
+                  <span>Retry Download</span>
                 </>
               ) : (
                 <>

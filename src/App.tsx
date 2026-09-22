@@ -87,6 +87,7 @@ export default function App() {
         const decoded = decodeCompactOrLegacyManifest(hash);
         if (decoded) {
           setPendingMagicManifest(decoded);
+          setIsPublicDownloadModalOpen(true);
           if (decoded.filename) {
             setMagicDetectedFilename(decoded.filename);
           }
@@ -1249,6 +1250,7 @@ export default function App() {
         onClose={() => setIsPublicDownloadModalOpen(false)}
         manifest={pendingMagicManifest}
         accounts={accounts}
+        onConnectAccount={() => handleLogin()}
       />
 
     </div>

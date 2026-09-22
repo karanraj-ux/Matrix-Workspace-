@@ -301,30 +301,57 @@ export const downloadShardedFile = async (
   const failedChunkIndices: number[] = [];
 
   const fetchAndDecryptChunk = async (chunk: ShardChunk): Promise<ArrayBuffer> => {
-    let acc = accounts.find(a => a.id === chunk.accountId);
+    let acc = accounts.find(a => a.id === chunk.accountId || (chunk.accountEmail && a.email === chunk.accountEmail));
     if (!acc || acc.isExpired) {
       // Magic Link scenario: We don't own the chunk's account.
-      // Check if user has an active account to provide bearer auth:
-      acc = accounts.find(a => !a.isExpired && a.provider === chunk.provider) || accounts.find(a => !a.isExpired);
+      // Check if user has an active account of this provider to provide bearer auth:
+      const targetProvider = chunk.provider || 'google';
+      acc = accounts.find(a => !a.isExpired && (a.provider || 'google') === targetProvider) || accounts.find(a => !a.isExpired);
     }
 
-    let rawBuf: ArrayBuffer;
+    let rawBuf: ArrayBuffer | null = null;
+    let lastError: Error | null = null;
+
+    // Strategy 1: If user has an active authenticated account, use it with Bearer token
     if (acc && !acc.isExpired) {
-      rawBuf = await downloadChunkFromProvider(acc, chunk.driveFileId, chunk.downloadPath);
-    } else if (chunk.provider === 'google' || !chunk.provider) {
-      // Public Zero-Auth direct fallback via Google Drive public web content
-      const directPublicUrl = `https://drive.usercontent.google.com/download?id=${chunk.driveFileId}&export=download&authuser=0`;
-      let res = await fetch(directPublicUrl);
-      if (!res.ok) {
-        // Alternative public API endpoint
-        res = await fetch(`https://www.googleapis.com/drive/v3/files/${chunk.driveFileId}?alt=media`);
+      try {
+        rawBuf = await downloadChunkFromProvider(acc, chunk.driveFileId, chunk.downloadPath);
+      } catch (err: any) {
+        console.warn(`Authenticated chunk download failed for chunk ${chunk.chunkIndex}:`, err);
+        lastError = err;
       }
-      if (!res.ok) {
-        throw new Error(`Public chunk download failed (HTTP ${res.status}). Ensure uploader shared public permissions.`);
+    }
+
+    // Strategy 2: Proxy endpoint (/api/public-chunk) - bypasses browser CORS completely
+    if (!rawBuf && (chunk.provider === 'google' || !chunk.provider)) {
+      try {
+        const proxyRes = await fetch(`/api/public-chunk?fileId=${encodeURIComponent(chunk.driveFileId)}`);
+        if (proxyRes.ok) {
+          rawBuf = await proxyRes.arrayBuffer();
+        } else {
+          const errText = await proxyRes.text().catch(() => '');
+          console.warn(`Proxy chunk fetch failed with status ${proxyRes.status}:`, errText);
+        }
+      } catch (proxyErr) {
+        console.warn(`Proxy chunk fetch network error:`, proxyErr);
       }
-      rawBuf = await res.arrayBuffer();
-    } else {
-      throw new Error(`Please connect an account to download this chunk.`);
+    }
+
+    // Strategy 3: Direct browser fetch fallback
+    if (!rawBuf && (chunk.provider === 'google' || !chunk.provider)) {
+      try {
+        const directPublicUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(chunk.driveFileId)}&export=download&authuser=0`;
+        const res = await fetch(directPublicUrl);
+        if (res.ok) {
+          rawBuf = await res.arrayBuffer();
+        }
+      } catch {
+        // Expected CORS failure in some browser environments
+      }
+    }
+
+    if (!rawBuf) {
+      throw lastError || new Error(`Public retrieval failed for Chunk ${chunk.chunkIndex + 1}. The file may require Google sign-in to access.`);
     }
 
     if (chunk.cryptoMeta?.encrypted && masterKey) {
@@ -525,8 +552,9 @@ export const makeManifestChunksPublic = async (manifest: ShardManifest, accounts
   const allChunks = [...manifest.chunks, ...(manifest.parityChunk ? [manifest.parityChunk] : [])];
   
   const publicPromises = allChunks.map(async (chunk) => {
-    if (chunk.provider === 'google') {
-      const account = accounts.find((a) => a.id === chunk.accountId);
+    if (chunk.provider === 'google' || !chunk.provider) {
+      const account = accounts.find((a) => a.id === chunk.accountId || (chunk.accountEmail && a.email === chunk.accountEmail))
+        || accounts.find(a => !a.isExpired && (a.provider === 'google' || !a.provider));
       if (account) {
         await makeGoogleDriveFilePublic(chunk.driveFileId, account.accessToken);
       }
@@ -540,8 +568,9 @@ export const revokeManifestChunksPublic = async (manifest: ShardManifest, accoun
   const allChunks = [...manifest.chunks, ...(manifest.parityChunk ? [manifest.parityChunk] : [])];
   
   const revokePromises = allChunks.map(async (chunk) => {
-    if (chunk.provider === 'google') {
-      const account = accounts.find((a) => a.id === chunk.accountId);
+    if (chunk.provider === 'google' || !chunk.provider) {
+      const account = accounts.find((a) => a.id === chunk.accountId || (chunk.accountEmail && a.email === chunk.accountEmail))
+        || accounts.find(a => !a.isExpired && (a.provider === 'google' || !a.provider));
       if (account) {
         await revokeGoogleDriveFilePublic(chunk.driveFileId, account.accessToken);
       }

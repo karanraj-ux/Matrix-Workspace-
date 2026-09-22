@@ -184,7 +184,7 @@ export const downloadChunkFromProvider = async (
   const provider = account.provider || 'google';
 
   if (provider === 'google') {
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
       headers: { Authorization: `Bearer ${account.accessToken}` },
     });
     if (!res.ok) throw new Error(`Google chunk download failed: ${res.statusText}`);
@@ -244,16 +244,21 @@ export const deleteChunkFromProvider = async (
 };
 
 export const makeGoogleDriveFilePublic = async (fileId: string, accessToken: string) => {
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ role: 'reader', type: 'anyone' })
-  });
-  if (!res.ok) {
-    console.warn(`Could not make file ${fileId} public`, await res.text());
+  try {
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?supportsAllDrives=true`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ role: 'reader', type: 'anyone' })
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn(`Could not make file ${fileId} public (HTTP ${res.status}):`, errText);
+    }
+  } catch (err) {
+    console.warn(`Network error making file ${fileId} public:`, err);
   }
 };
 
