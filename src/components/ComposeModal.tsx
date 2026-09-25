@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Send, Loader2, Paperclip } from 'lucide-react';
 import { AccountToken, GmailMessage, DriveFile } from '../types';
 import { createMimeMessage } from '../utils/emailUtils';
-import { sendEmail, uploadFileToDriveResumable } from '../services/googleService';
+import { uploadFileToDriveResumable } from '../services/googleService';
+import { sendUnifiedEmail } from '../services/emailService';
 
 interface ComposeModalProps {
   isOpen: boolean;
@@ -144,22 +145,18 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({ isOpen, onClose, acc
     }
 
     try {
-      const mimeMessage = createMimeMessage({
+      await sendUnifiedEmail(account, {
         to,
-        from: account.email || '',
         subject,
         body,
-        inReplyTo: replyToEmail?.messageId,
-        references: replyToEmail?.references
+        replyToEmail,
       });
-
-      await sendEmail(account.accessToken, mimeMessage, replyToEmail?.threadId);
       
       setIsSending(false);
       onClose();
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      setError('Failed to send email');
+      setError(e.message || 'Failed to send email');
       setIsSending(false);
     }
   };

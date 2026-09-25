@@ -12,6 +12,7 @@ import {
   Clock,
   Send,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { get } from 'idb-keyval';
 import { fetchAccountQuota } from '../services/multiCloudAdapter';
@@ -19,6 +20,7 @@ import { AccountToken, GmailMessage, DriveFile } from '../types';
 import { AutomationLog, AutomationRule } from '../types/automation';
 
 import { StorageQuotaInfo } from '../types';
+import { UnifiedStoragePoolBar } from '../components/UnifiedStoragePoolBar';
 
 interface DashboardViewProps {
   accounts: AccountToken[];
@@ -84,7 +86,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const quotaList = Object.values(accountQuotas) as StorageQuotaInfo[];
   const totalPooledBytes = quotaList.reduce((acc, q) => acc + (q.totalBytes || 0), 0);
-  const totalVirtualStorageGb = totalPooledBytes > 0 ? Math.round(totalPooledBytes / (1024 * 1024 * 1024)) : activeAccounts.length * 15;
+  const totalVirtualStorageGb = totalPooledBytes > 0 
+    ? Math.round(totalPooledBytes / (1024 * 1024 * 1024)) 
+    : 0;
 
 
   return (
@@ -101,7 +105,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 Workspace Command Deck
               </h1>
               <p className="text-xs text-slate-500 mt-0.5">
-                Unified aggregation across {accounts.length} Google account{accounts.length !== 1 ? 's' : ''} with client-side zero-server privacy.
+                {accounts.length > 0
+                  ? `Unified aggregation across ${accounts.length} connected cloud account${accounts.length !== 1 ? 's' : ''} with client-side zero-server privacy.`
+                  : 'Connect your Google Drive, OneDrive, or Dropbox accounts to pool storage and unify your inbox.'}
               </p>
             </div>
           </div>
@@ -170,6 +176,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
 
+        {/* Unified Storage Pool Bar (Aggregated Multi-Cloud Quotas) */}
+        {accounts.length > 0 && (
+          <UnifiedStoragePoolBar
+            accounts={accounts}
+            quotas={accountQuotas}
+            onOpenRebalance={() => setCurrentView('drive')}
+          />
+        )}
+
         {/* Expired Accounts Warning */}
         {expiredAccounts.length > 0 && (
           <div className="bg-red-50 border border-red-200 rounded-2xl p-5 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -203,28 +218,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         )}
 
-        {/* Zero State */}
+        {/* Explore Mode Quick Connect Bar (Shown when 0 accounts connected) */}
         {accounts.length === 0 && (
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-12 text-center shadow-xs">
-            <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto mb-4 border border-blue-100">
-              <LayoutDashboard className="w-7 h-7" />
+          <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-emerald-50 border border-blue-200/80 rounded-2xl p-6 shadow-xs flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-white text-blue-600 border border-blue-200 flex items-center justify-center shrink-0 shadow-xs">
+                <Sparkles className="w-6 h-6 text-amber-500" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Explore Mode: Full Access Unlocked</h3>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  You are exploring Matrix Workspace with interactive sample data. Connect Google, OneDrive, or Dropbox anytime. None of the keys or providers are mandatory!
+                </p>
+              </div>
             </div>
-            <h2 className="text-lg font-bold text-slate-900 mb-1">Welcome to Matrix Workspace</h2>
-            <p className="text-xs text-slate-500 mb-6 max-w-md mx-auto">
-              Link your Google accounts to unlock unified mailbox aggregation, virtual RAID-5 storage pooling, and cross-account mail automation.
-            </p>
-            <button
-              onClick={() => handleLogin(true)}
-              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-xs inline-flex items-center gap-2 transition-colors cursor-pointer"
-            >
-              Link Your First Account
-            </button>
+            <div className="flex items-center gap-2 w-full md:w-auto shrink-0 justify-end">
+              <button
+                onClick={() => handleLogin(true)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+              >
+                + Google (15 GB)
+              </button>
+              <button
+                onClick={() => setCurrentView('settings')}
+                className="px-4 py-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+              >
+                + More Clouds
+              </button>
+            </div>
           </div>
         )}
 
         {/* Bento Grid */}
-        {accounts.length > 0 && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
             {/* Mail Bento Widget */}
             <div className="bg-white border border-slate-200/90 rounded-2xl flex flex-col shadow-xs hover:shadow-sm transition-shadow h-[380px]">
               <div className="p-4 border-b border-slate-100 flex items-center justify-between">
@@ -246,8 +272,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               <div className="flex-1 overflow-y-auto p-3 space-y-2">
                 {latestEmails.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-xs text-slate-400">
-                    No recent emails found
+                  <div className="h-full flex flex-col items-center justify-center p-6 text-center text-xs text-slate-400">
+                    <Mail className="w-8 h-8 text-slate-300 mb-2 stroke-1" />
+                    <p className="font-semibold text-slate-700">No messages synced yet</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Connect Google or Outlook to aggregate inbox</p>
                   </div>
                 ) : (
                   latestEmails.map(email => (
@@ -296,8 +324,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               <div className="flex-1 overflow-y-auto p-3 space-y-2">
                 {latestFiles.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-xs text-slate-400">
-                    No recent files
+                  <div className="h-full flex flex-col items-center justify-center p-6 text-center text-xs text-slate-400">
+                    <HardDrive className="w-8 h-8 text-slate-300 mb-2 stroke-1" />
+                    <p className="font-semibold text-slate-700">No drive files synced yet</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Drop files to shard or connect cloud accounts</p>
                   </div>
                 ) : (
                   latestFiles.map(file => (
@@ -376,7 +406,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
           </div>
-        )}
       </div>
     </div>
   );

@@ -1,22 +1,16 @@
 import { AccountToken } from '../types';
+import { listFiles } from './multiCloudAdapter';
 
 export const fetchDriveFiles = async (acc: AccountToken, handleTokenExpiry: (id: string) => void) => {
   if (acc.isExpired) return [];
   try {
-    const res = await fetch('https://www.googleapis.com/drive/v3/files?pageSize=1000&fields=files(id,name,mimeType,modifiedTime,webViewLink,webContentLink,iconLink)&q=trashed=false&orderBy=modifiedTime%20desc', {
-      headers: { Authorization: `Bearer ${acc.accessToken}` }
-    });
-    if (res.status === 401) { handleTokenExpiry(acc.id); return []; }
-    const data = await res.json();
-    return (data.files || []).map((f: any) => ({
-      ...f,
-      accountId: acc.id,
-      accountEmail: acc.email,
-      accountPhoto: acc.photoURL,
-      timestamp: new Date(f.modifiedTime).getTime()
-    }));
-  } catch (e) {
-    console.error(`Drive fetch failed for ${acc.email}`, e);
+    const files = await listFiles(acc);
+    return files;
+  } catch (e: any) {
+    if (e?.message?.includes('401') || e?.message?.includes('token')) {
+      handleTokenExpiry(acc.id);
+    }
+    console.error(`Drive fetch failed for ${acc.email} (${acc.provider || 'google'})`, e);
     return [];
   }
 };

@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Zap, Layers, Search, Plus, CheckSquare, Square, Mail, FileText, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard, Menu, Sparkles } from 'lucide-react';
+import { Zap, Layers, Search, Plus, CheckSquare, Square, Mail, FileText, ExternalLink, LogOut, Loader2, Play, Download, SortDesc, SortAsc, X, Archive, MailOpen, Reply, ArrowRightLeft, CheckCircle2, AlertCircle, LayoutDashboard, Menu, Sparkles, Cloud } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { logout } from './auth';
 
-import { fetchDriveFiles, fetchGmailMessages, syncConfigToShadowDb, fetchConfigFromShadowDb } from './services/googleService';
+import { fetchDriveFiles, syncConfigToShadowDb, fetchConfigFromShadowDb } from './services/googleService';
+import { fetchUnifiedEmails, fetchUnifiedEmailContent, executeUnifiedEmailAction } from './services/emailService';
 import { AccountToken, GmailMessage, DriveFile } from './types';
 import { AutomationRule } from './types/automation';
 
 import { Sidebar } from './components/Sidebar';
-import { UpgradeModal } from './components/UpgradeModal';
 import { TransferModal } from './components/TransferModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ConnectMultiCloudModal } from './components/ConnectMultiCloudModal';
+import { completePkceCallback } from './services/pkceAuthService';
 
 import { MailView } from './views/MailView';
 import { DriveView } from './views/DriveView';
@@ -26,7 +28,9 @@ import { executeAutomations } from './services/automationEngine';
 
 import { decodeCompactOrLegacyManifest } from './services/compactMagicCodec';
 import { PublicMagicDownloadModal } from './components/PublicMagicDownloadModal';
+import { CommandPalette } from './components/CommandPalette';
 import { ShardManifest } from './services/shardingService';
+import { quotaRebalancer } from './services/quotaRebalancerDaemon';
 
 export default function App() {
   const {
@@ -159,9 +163,52 @@ export default function App() {
     return () => clearInterval(interval);
   }, [accounts, activeAccountIds]);
 
-  // Settings & Upgrades
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
-  const [activeStaticPage, setActiveStaticPage] = useState<'privacy' | 'terms' | 'about' | null>(null);
+  // Autonomous Multi-Cloud Quota Rebalancing Daemon
+  useEffect(() => {
+    quotaRebalancer.startDaemon(() => accounts);
+    return () => quotaRebalancer.stopDaemon();
+  }, [accounts]);
+
+  // Settings & Static Pages
+  const [activeStaticPage, setActiveStaticPage] = useState<'privacy' | 'terms' | 'about' | 'security' | null>(null);
+
+  // PKCE Multi-Cloud Modal
+  const [connectModalProvider, setConnectModalProvider] = useState<'onedrive' | 'dropbox' | null>(null);
+
+  // PKCE OAuth URL Callback Detector (Popup & Redirect)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const searchParams = new URLSearchParams(window.location.search);
+    const code = searchParams.get('code');
+    const state = searchParams.get('state');
+
+    if (code && state) {
+      // 1. If this window was opened as a popup by another window
+      if (window.opener && window.opener !== window) {
+        try {
+          window.opener.postMessage(
+            { type: 'MATRIX_PKCE_CALLBACK', code, state },
+            window.location.origin
+          );
+          window.close();
+          return;
+        } catch (e) {
+          console.warn('Could not postMessage to opener window', e);
+        }
+      }
+
+      // 2. Otherwise this was a full-page redirect callback
+      completePkceCallback(code, state)
+        .then((newAccount) => {
+          handleAddMultiCloudAccount(newAccount);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        })
+        .catch((err) => {
+          console.error('Failed to complete PKCE OAuth callback:', err);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        });
+    }
+  }, []);
 
   // Email Reader State
   const [activeEmail, setActiveEmail] = useState<any | null>(null);
@@ -172,6 +219,22 @@ export default function App() {
   const [transferFile, setTransferFile] = useState<any | null>(null);
   const [isTransferring, setIsTransferring] = useState(false);
   const [transferSuccess, setTransferSuccess] = useState(false);
+
+  // Command Palette State
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+
+  const handleUploadSampleTestAsset = () => {
+    const content = `Matrix Workspace RAID-5 Multi-Cloud Shard Test Asset\nTimestamp: ${new Date().toISOString()}\nEncryption: AES-256-GCM\nErasure Coding: XOR Parity\n\nThis test asset verifies bit-exact reconstruction across Google Drive, OneDrive, and Dropbox.`;
+    const blob = new Blob([content], { type: 'application/pdf' });
+    const testFile = new File([blob], `Matrix_Enterprise_Audit_${Date.now().toString().slice(-4)}.pdf`, {
+      type: 'application/pdf',
+    });
+
+    setCurrentView('drive');
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('MATRIX_START_TEST_UPLOAD', { detail: { file: testFile } }));
+    }, 100);
+  };
 
   // Phase 3 Streams
   const [aggregatedEmails, setAggregatedEmails] = useState<any[]>([]);
@@ -222,7 +285,7 @@ export default function App() {
           return res;
         });
         const gmailPromises = activeAccounts.map(async acc => {
-          const res = await fetchGmailMessages(acc, handleTokenExpiry);
+          const res = await fetchUnifiedEmails(acc, handleTokenExpiry);
           await set(`matrix_emails_${acc.id}`, res).catch(() => {});
           return res;
         });
@@ -521,12 +584,7 @@ export default function App() {
     if (!account) return;
 
     try {
-      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${email.id}?format=full`, {
-        headers: { Authorization: `Bearer ${account.accessToken}` }
-      });
-      const data = await res.json();
-      const content = extractEmailBody(data.payload);
-      const attachments = extractAttachments(data.payload);
+      const { content, attachments } = await fetchUnifiedEmailContent(account, email);
       
       // Update active email with attachments
       setActiveEmail({ ...email, attachments });
@@ -554,19 +612,8 @@ export default function App() {
     const account = accounts.find(a => a.id === activeEmail.accountId);
     if (!account) return;
 
-    const payload = action === 'read' 
-      ? { removeLabelIds: ['UNREAD'] } 
-      : { removeLabelIds: ['UNREAD', 'INBOX'] }; // Archive also marks as read
-
     try {
-      await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${activeEmail.id}/modify`, {
-        method: 'POST',
-        headers: { 
-          Authorization: `Bearer ${account.accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
+      await executeUnifiedEmailAction(account, activeEmail, action);
       
       // Remove from UI instantly (Optimistic update)
       setAggregatedEmails(prev => prev.filter(e => e.id !== activeEmail.id));
@@ -697,203 +744,6 @@ export default function App() {
     );
   }
 
-  if (accounts.length === 0 && currentView !== 'settings') {
-    return (
-      <div className="min-h-screen w-screen flex flex-col bg-[#111111] text-white font-sans">
-        
-        {/* Navbar */}
-        <header className="sticky top-0 z-50 h-16 px-6 border-b border-white/10 bg-[#0a0a0a] flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
-              <Layers className="w-4 h-4 text-white" />
-            </div>
-            <span className="font-bold tracking-tight">Matrix Workspace</span>
-          </div>
-          <div className="flex items-center gap-4 text-sm font-medium text-neutral-500">
-            <button onClick={() => setActiveStaticPage('about')} className="hover:text-white transition-colors hidden sm:block">Architecture</button>
-            <button onClick={() => setActiveStaticPage('pricing')} className="bg-white hover:bg-neutral-800 text-white px-4 py-1.5 rounded-full transition-colors font-bold text-xs flex items-center gap-2">
-              Get Lifetime Access
-            </button>
-          </div>
-        </header>
-
-        {/* Hero Section */}
-        <main className="flex-1 flex flex-col items-center justify-center p-6 text-center">
-          <div className="max-w-2xl mx-auto space-y-8">
-            <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-white/10">
-               <Layers className="w-8 h-8 text-neutral-200" />
-            </div>
-            
-            <h1 className="text-4xl md:text-5xl font-black tracking-tight leading-[1.1] text-white">
-              Unified Workspace
-            </h1>
-            
-            <p className="text-lg text-neutral-500 max-w-xl mx-auto leading-relaxed">
-              Connect your Google, OneDrive, and Dropbox accounts to access Mail, Distributed Drive, and Automations in a single secure, client-side dashboard. 
-            </p>
-            
-            {pendingMagicHash && (
-              <div className="bg-gradient-to-r from-blue-950/80 via-indigo-950/70 to-purple-950/80 border border-blue-500/40 rounded-2xl p-5 text-left max-w-lg mx-auto shadow-xl backdrop-blur-md space-y-3">
-                <div className="flex items-center justify-between gap-2 text-blue-400 font-bold text-sm">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-amber-400" /> Decentralized Magic Link Detected
-                  </div>
-                  <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-400/30">
-                    Zero-Auth Ready
-                  </span>
-                </div>
-                {magicDetectedFilename && (
-                  <div className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
-                    <span className="text-xs font-semibold text-white truncate">{magicDetectedFilename}</span>
-                  </div>
-                )}
-                <p className="text-xs text-neutral-300 leading-relaxed">
-                  Someone shared an encrypted, sharded file with you. You can download and decrypt it instantly without signing in or providing client credentials!
-                </p>
-
-                {pendingMagicManifest && (
-                  <div className="pt-1">
-                    <button
-                      onClick={() => setIsPublicDownloadModalOpen(true)}
-                      className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Download size={15} />
-                      <span>Instant Download & Decrypt (No Sign-In Required)</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            
-            <div className="pt-6 flex flex-col items-center gap-4">
-              <button 
-                onClick={() => handleLogin(false)}
-                disabled={isAddingAccount}
-                className="py-3.5 px-8 bg-white hover:bg-neutral-800 text-white rounded-xl font-bold text-base transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-3 disabled:opacity-70 disabled:hover:translate-y-0 w-full md:w-auto cursor-pointer"
-              >
-                {isAddingAccount ? (
-                  <>
-                    <Loader2 className="animate-spin w-5 h-5 text-blue-400" />
-                    <span>{authConnectingStage || 'Connecting...'}</span>
-                  </>
-                ) : (
-                  <span>Connect Google Account</span>
-                )}
-              </button>
-
-              {isAddingAccount && authConnectingStage && (
-                <div className="text-xs text-blue-400 animate-pulse flex items-center gap-1.5 font-medium">
-                  <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />
-                  {authConnectingStage}
-                </div>
-              )}
-
-              <div className="flex items-center gap-2 text-xs text-neutral-400 font-medium mt-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-neutral-400" />
-                100% Client-Side. Your data never leaves the browser.
-              </div>
-            </div>
-          </div>
-        </main>
-
-        {/* Footer */}
-        <footer className="py-8 border-t border-white/10 bg-[#0a0a0a] mt-auto">
-          <div className="max-w-5xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4">
-            <div className="text-sm text-neutral-500 font-medium">© 2026 Matrix Workspace. Built for power users.</div>
-            <div className="flex gap-6 text-sm text-neutral-500 font-medium">
-              <button onClick={() => setActiveStaticPage('privacy')} className="hover:text-white transition-colors">Privacy Policy</button>
-              <button onClick={() => setActiveStaticPage('terms')} className="hover:text-white transition-colors">Terms of Service</button>
-              <a href="mailto:kr378434@gmail.com" className="hover:text-white transition-colors">Contact</a>
-            </div>
-          </div>
-        </footer>
-
-        {/* Static Page Modals overlay over the landing page */}
-        {activeStaticPage && (
-          <div className="fixed inset-0 z-50 bg-[#0a0a0a] overflow-y-auto animate-in slide-in-from-bottom-8">
-             <div className="max-w-3xl mx-auto p-8 md:p-12 relative">
-               <button onClick={() => setActiveStaticPage(null)} className="fixed top-6 right-6 p-3 bg-white/5 hover:bg-white/20 rounded-full transition-colors z-10">
-                 <X className="w-5 h-5" />
-               </button>
-               
-               <div className="prose prose-neutral max-w-none font-sans">
-                 {activeStaticPage === 'privacy' && (
-                   <>
-                     <h1 className="text-4xl font-black mb-8">Privacy Policy</h1>
-                     <p className="lead text-xl text-neutral-400 mb-8">Your data never leaves your browser.</p>
-                     
-                     <h3 className="text-2xl font-bold mt-8 mb-4">1. Zero-Server Architecture</h3>
-                     <p className="text-neutral-400 mb-6">Matrix Workspace is built on a strictly local, serverless architecture. We do not operate backend servers, databases, or analytics trackers that collect your email content, or Drive files. All OAuth tokens and aggregated data are stored exclusively in your browser's local storage (IndexedDB).</p>
-                     
-                     <h3 className="text-2xl font-bold mt-8 mb-4">2. Google API Services Usage</h3>
-                     <p className="text-neutral-400 mb-6">Our application requests read-only access to your Gmail, and full access to your Google Drive (strictly to enable the Cross-Account Magic Transfer feature). We do not transmit this data to any third party. The data flows directly from Google's servers to your local machine.</p>
-
-                     <h3 className="text-2xl font-bold mt-8 mb-4">3. Enterprise BYOK (Bring Your Own Key)</h3>
-                     <p className="text-neutral-400 mb-6">Users who opt into the Enterprise BYOK program utilize their own Google Cloud Credentials. In this mode, Matrix Workspace acts purely as a client-side interface framework, and you maintain complete administrative control over the API quotas and security logs within your own Google Cloud Console.</p>
-                   </>
-                 )}
-                 
-                 {activeStaticPage === 'terms' && (
-                   <>
-                     <h1 className="text-4xl font-black mb-8">Terms of Service</h1>
-                     <p className="text-neutral-400 mb-6">By using Matrix Workspace, you agree to these terms. This is a beta utility provided "as is" without warranty. We are not responsible for accidental data deletion or file misrouting caused by user error during cross-account transfers.</p>
-                   </>
-                 )}
-
-                 {activeStaticPage === 'about' && (
-                   <>
-                     <h1 className="text-4xl font-black mb-8">System Architecture</h1>
-                     <p className="text-neutral-400 mb-6">Matrix Workspace is a strictly client-side React boilerplate designed for developers to aggregate Google services without relying on backend servers.</p>
-                     <p className="text-neutral-400 mb-6">By utilizing Google Identity Services (GSI) and IndexedDB, this template manages multiple OAuth tokens concurrently within the browser memory. This guarantees that private emails and files are never transmitted to third-party databases, making it the perfect foundation for privacy-first SaaS products and internal tools.</p>
-                   </>
-                 )}
-
-                 {activeStaticPage === 'pricing' && (
-                   <>
-                     <h1 className="text-4xl font-black mb-6">Unlock Matrix Workspace.</h1>
-                     <p className="text-xl text-neutral-400 mb-10 leading-relaxed">
-                       Stop logging in and out of different Chrome profiles. Aggregate all your client inboxes and files into a single, secure dashboard.
-                     </p>
-                     
-                     <div className="grid md:grid-cols-2 gap-8">
-                       <div className="border border-white/10 bg-[#111111] rounded-2xl p-8 flex flex-col shadow-sm">
-                         <h3 className="text-lg font-bold mb-6 flex items-center gap-2 text-white">
-                           <Layers className="w-5 h-5 text-neutral-500" /> What's included?
-                         </h3>
-                         <ul className="space-y-4 text-sm font-medium text-neutral-400 flex-1">
-                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" /> <span><strong>Unified Inbox.</strong> Read emails from up to 5 accounts at once.</span></li>
-                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" /> <span><strong>Zero-Server File Transfers.</strong> Move files between Google Drives seamlessly.</span></li>
-                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" /> <span><strong>Multi-Cloud Storage.</strong> Stripe & encrypt across Google, OneDrive, Dropbox.</span></li>
-                           <li className="flex gap-3 items-start"><CheckCircle2 className="w-5 h-5 text-white shrink-0 mt-0.5" /> <span><strong>100% Client-Side Privacy.</strong> Your data never touches our servers.</span></li>
-                         </ul>
-                       </div>
-                       
-                       <div className="border border-white/10 bg-[#0a0a0a] rounded-2xl p-8 shadow-xl relative overflow-hidden flex flex-col group hover:border-black transition-colors">
-                         <h3 className="text-neutral-500 font-semibold mb-2 uppercase tracking-wide text-xs">Early Adopter</h3>
-                         <div className="flex items-baseline gap-1 mb-4">
-                           <span className="text-5xl font-black text-white">$49</span>
-                           <span className="text-neutral-400 font-medium">USD</span>
-                         </div>
-                         <p className="text-sm text-neutral-500 mb-8 leading-relaxed">
-                           One-time payment for lifetime access. Use your own Google Cloud API key (BYOK) for unlimited usage.
-                         </p>
-                         
-                         <a href="https://gumroad.com" target="_blank" rel="noopener noreferrer" className="mt-auto py-3.5 px-6 bg-white hover:bg-neutral-800 text-white rounded-xl font-bold text-center transition-all shadow-md group-hover:shadow-lg flex items-center justify-center gap-2">
-                           Get Lifetime Access &rarr;
-                         </a>
-                       </div>
-                     </div>
-                   </>
-                 )}
-               </div>
-             </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-[#F8FAFC] font-sans text-slate-900">
       
@@ -914,7 +764,7 @@ export default function App() {
           setReplyToEmail(null);
           setIsComposeOpen(true);
         }}
-        onAddMultiCloudAccount={() => setCurrentView('settings')}
+        onAddMultiCloudAccount={(provider) => setConnectModalProvider(provider || 'onedrive')}
       />
 
       {/* MAIN CONTENT */}
@@ -930,15 +780,23 @@ export default function App() {
               <Menu className="w-5 h-5" />
             </button>
             
-            <div className="flex-1 relative">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <div 
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="flex-1 relative cursor-pointer group"
+            >
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-hover:text-slate-600 transition-colors" />
               <input 
                 type="text" 
-                placeholder="Search messages & files across accounts... (Press ⌘K)" 
+                readOnly
+                placeholder="Search messages, files & commands... (Press ⌘K)" 
                 value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200/90 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none"
+                className="w-full pl-10 pr-12 py-2 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200/90 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 transition-all outline-none cursor-pointer"
               />
+              <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono text-slate-400 bg-white border border-slate-200 rounded">
+                  ⌘K
+                </kbd>
+              </div>
             </div>
           </div>
 
@@ -949,6 +807,43 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {/* Workspace Guidance Strip (Shown when 0 accounts connected) */}
+        {accounts.length === 0 && (
+          <div className="bg-slate-100/70 border-b border-slate-200/90 px-4 md:px-6 py-2 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
+            <div className="flex items-center gap-2 text-slate-700">
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              <span className="font-semibold text-slate-900">Workspace Ready:</span>
+              <span>Connect your Google Drive, OneDrive, or Dropbox accounts to stream live messages and pool storage. No provider is mandatory.</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleLogin(false)}
+                className="px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg font-semibold text-[11px] shadow-2xs transition-colors cursor-pointer"
+              >
+                + Google (15 GB)
+              </button>
+              <button
+                onClick={() => setConnectModalProvider('onedrive')}
+                className="px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-blue-700 rounded-lg font-semibold text-[11px] shadow-2xs transition-colors cursor-pointer"
+              >
+                + OneDrive (5 GB)
+              </button>
+              <button
+                onClick={() => setConnectModalProvider('dropbox')}
+                className="px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-sky-700 rounded-lg font-semibold text-[11px] shadow-2xs transition-colors cursor-pointer"
+              >
+                + Dropbox (2 GB)
+              </button>
+              <button
+                onClick={() => setActiveStaticPage('about')}
+                className="px-2.5 py-1 text-slate-500 hover:text-slate-800 font-medium text-[11px] transition-colors cursor-pointer"
+              >
+                Architecture
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Dynamic Views */}
         <div className="flex-1 overflow-hidden flex flex-col min-h-0 relative bg-[#F8FAFC]">
@@ -1238,11 +1133,6 @@ export default function App() {
         replyToEmail={replyToEmail}
         initialDriveFile={fileToAttach}
       />
-      <UpgradeModal 
-        showUpgradeModal={showUpgradeModal} 
-        setShowUpgradeModal={setShowUpgradeModal} 
-        setCurrentView={setCurrentView} 
-      />
 
       {/* Zero-Auth Direct P2P Magic Download Modal */}
       <PublicMagicDownloadModal
@@ -1251,6 +1141,110 @@ export default function App() {
         manifest={pendingMagicManifest}
         accounts={accounts}
         onConnectAccount={() => handleLogin()}
+      />
+
+      {/* Connect Multi-Cloud Provider Modal (PKCE) */}
+      {connectModalProvider && (
+        <ConnectMultiCloudModal
+          isOpen={true}
+          initialProvider={connectModalProvider}
+          onClose={() => setConnectModalProvider(null)}
+          onAccountAdded={(newAcc) => {
+            handleAddMultiCloudAccount(newAcc);
+            setConnectModalProvider(null);
+          }}
+        />
+      )}
+
+      {/* Static Info Page Modal */}
+      {activeStaticPage && (
+        <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200">
+          <div className="bg-[#111111] text-white border border-white/10 rounded-2xl max-w-3xl w-full p-6 md:p-8 relative shadow-2xl max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setActiveStaticPage(null)}
+              className="absolute top-4 right-4 p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="prose prose-invert max-w-none font-sans">
+              {activeStaticPage === 'privacy' && (
+                <>
+                  <h1 className="text-2xl md:text-3xl font-black mb-4">Privacy Policy</h1>
+                  <p className="text-emerald-400 font-medium text-sm mb-6">100% Zero-Server. Your data never leaves your browser.</p>
+                  <h3 className="text-lg font-bold mt-6 mb-2">1. Zero-Server Architecture</h3>
+                  <p className="text-neutral-400 text-xs leading-relaxed mb-4">
+                    Matrix Workspace is built on a strictly local, serverless architecture. We do not operate backend servers, databases, or analytics trackers that collect your email content or Drive files. All OAuth tokens and aggregated data are stored exclusively in your browser's local storage (IndexedDB).
+                  </p>
+                  <h3 className="text-lg font-bold mt-6 mb-2">2. Multi-Cloud API Usage</h3>
+                  <p className="text-neutral-400 text-xs leading-relaxed mb-4">
+                    Our application communicates directly with Google, Microsoft, and Dropbox APIs solely to provide unified mail and distributed drive sharding. No intermediary server intercepts your tokens or data.
+                  </p>
+                </>
+              )}
+
+              {activeStaticPage === 'terms' && (
+                <>
+                  <h1 className="text-2xl md:text-3xl font-black mb-4">Terms of Service</h1>
+                  <p className="text-neutral-400 text-xs leading-relaxed mb-4">
+                    By using Matrix Workspace, you agree to these terms. This is a local-first utility provided "as is" without warranty. All data operations are executed directly inside your browser client.
+                  </p>
+                </>
+              )}
+
+              {activeStaticPage === 'about' && (
+                <>
+                  <h1 className="text-2xl md:text-3xl font-black mb-4">System Architecture</h1>
+                  <p className="text-neutral-400 text-xs leading-relaxed mb-4">
+                    Matrix Workspace is an open, sovereign multi-cloud orchestrator. It bridges Google Drive, Microsoft OneDrive, and Dropbox into a unified virtual RAID-5 drive with AES-256-GCM encryption, XOR erasure coding, and decentralized magic link file transfer.
+                  </p>
+                </>
+              )}
+
+              {activeStaticPage === 'security' && (
+                <>
+                  <h1 className="text-2xl md:text-3xl font-black mb-4">Zero-Server & Sovereign</h1>
+                  <p className="text-neutral-400 text-xs leading-relaxed mb-6">
+                    100% Free, Open-Source, and Local-First. Your credentials, encryption keys, and private data never touch any intermediary backend.
+                  </p>
+                  <div className="space-y-3">
+                    <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-xs">
+                      <strong>Zero Relay Backend:</strong> Direct browser connection to Google, OneDrive, and Dropbox.
+                    </div>
+                    <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-xs">
+                      <strong>AES-256-GCM Encryption:</strong> Chunks are encrypted with keys derived locally in your browser.
+                    </div>
+                    <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-xs">
+                      <strong>XOR RAID-5 Parity:</strong> Outage resilience through client-side erasure coding across heterogeneous clouds.
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Global Command Palette (⌘K) */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        emails={filteredEmails}
+        files={filteredFiles}
+        onNavigate={(view) => setCurrentView(view)}
+        onOpenEmail={(email) => {
+          openEmail(email);
+          setCurrentView('mail');
+        }}
+        onOpenCompose={() => {
+          setReplyToEmail(null);
+          setIsComposeOpen(true);
+        }}
+        onTriggerUpload={() => {
+          setCurrentView('drive');
+          handleUploadSampleTestAsset();
+        }}
+        onOpenConnect={(provider) => setConnectModalProvider(provider || 'onedrive')}
       />
 
     </div>

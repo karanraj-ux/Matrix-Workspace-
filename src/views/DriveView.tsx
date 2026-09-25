@@ -27,6 +27,10 @@ import {
   ExternalLink,
   MoreVertical,
   Globe,
+  Radio,
+  FolderSync,
+  FolderCheck,
+  Scale,
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { DriveFile, AccountToken, StorageQuotaInfo } from '../types';
@@ -39,6 +43,9 @@ import { MultiShareModal, MultiShareItem } from '../components/MultiShareModal';
 import { StandardMultiUploadPickerModal } from '../components/StandardMultiUploadPickerModal';
 import { MobileActionSheet, MobileActionSheetItem } from '../components/MobileActionSheet';
 import { QRCodeCard } from '../components/QRCodeCard';
+import { P2PTunnelModal } from '../components/P2PTunnelModal';
+import { QuotaRebalanceModal } from '../components/QuotaRebalanceModal';
+import { desktopSync, MountedFolderState } from '../services/desktopSyncService';
 
 interface DriveViewProps {
   customClientId?: string;
@@ -181,16 +188,153 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
     title: 'Public Link & QR Code',
   });
 
+  // WebRTC P2P Direct Tunnel State
+  const [p2pModalOpen, setP2pModalOpen] = useState(false);
+  const [p2pFile, setP2pFile] = useState<{ file?: File | Blob; filename?: string } | null>(null);
+
+  // Quota Rebalance Modal State
+  const [rebalanceModalOpen, setRebalanceModalOpen] = useState(false);
+
+  // Desktop Mounted Folder State
+  const [mountedFolder, setMountedFolder] = useState<MountedFolderState>({
+    isSupported: desktopSync.isSupported(),
+    isMounted: desktopSync.isMounted(),
+    folderName: desktopSync.getFolderName(),
+    files: [],
+  });
+  const [isSyncingFolder, setIsSyncingFolder] = useState(false);
+
+  const handleMountLocalFolder = async () => {
+    const res = await desktopSync.mountFolder();
+    if (res.success) {
+      setMountedFolder({
+        isSupported: true,
+        isMounted: true,
+        folderName: res.folderName,
+        files: res.files,
+      });
+      setStatusMessage({
+        type: 'success',
+        text: `Mounted local directory "${res.folderName}" (${res.files.length} file(s) found).`,
+      });
+    } else if (res.error && res.error !== 'User cancelled folder selection.') {
+      setStatusMessage({ type: 'error', text: res.error });
+    }
+  };
+
+  const handleUnmountLocalFolder = () => {
+    desktopSync.unmount();
+    setMountedFolder({
+      isSupported: desktopSync.isSupported(),
+      isMounted: false,
+      folderName: '',
+      files: [],
+    });
+  };
+
+  const handleSyncMountedFolderFiles = async () => {
+    if (!mountedFolder.isMounted || mountedFolder.files.length === 0) return;
+    setIsSyncingFolder(true);
+    setStatusMessage({ type: 'info', text: `Syncing files from local folder "${mountedFolder.folderName}" to multi-cloud array...` });
+
+    try {
+      const filesToSync: File[] = [];
+      for (const item of mountedFolder.files) {
+        const file = await desktopSync.readLocalFile(item.name);
+        if (file) filesToSync.push(file);
+      }
+
+      if (filesToSync.length > 0) {
+        await handleBatchUploadFiles(filesToSync);
+      }
+    } catch (e: any) {
+      setStatusMessage({ type: 'error', text: `Local folder sync failed: ${e.message}` });
+    } finally {
+      setIsSyncingFolder(false);
+    }
+  };
+
+  const handleExportToMountedFolder = async (record: StoredManifestRecord) => {
+    if (!mountedFolder.isMounted) return;
+    try {
+      setDownloadingId(record.id);
+      setDownloadProgress(0);
+      setDownloadStage(`Reassembling "${record.manifest.filename}" to local folder...`);
+
+      const blob = await downloadShardedFile(
+        record.manifest,
+        accounts,
+        (p, cur, tot, stage) => {
+          setDownloadProgress(p);
+          if (stage) setDownloadStage(stage);
+        },
+        record.manifest.magicKey
+      );
+
+      const ok = await desktopSync.writeLocalFile(record.manifest.filename, blob);
+      if (ok) {
+        setStatusMessage({
+          type: 'success',
+          text: `Exported "${record.manifest.filename}" directly to mounted folder "${mountedFolder.folderName}"!`,
+        });
+        const updatedFiles = await desktopSync.listMountedFiles();
+        setMountedFolder(prev => ({ ...prev, files: updatedFiles }));
+      } else {
+        setStatusMessage({ type: 'error', text: 'Could not write file to mounted folder' });
+      }
+    } catch (e: any) {
+      setStatusMessage({ type: 'error', text: `Export failed: ${e.message}` });
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  const handleP2PStreamVaultFile = async (record: StoredManifestRecord) => {
+    try {
+      setDownloadingId(record.id);
+      setDownloadProgress(0);
+      setDownloadStage(`Reassembling "${record.manifest.filename}" for P2P stream...`);
+
+      const blob = await downloadShardedFile(
+        record.manifest,
+        accounts,
+        (p, cur, tot, stage) => {
+          setDownloadProgress(p);
+          if (stage) setDownloadStage(stage);
+        },
+        record.manifest.magicKey
+      );
+
+      const file = new File([blob], record.manifest.filename, { type: record.manifest.mimeType });
+      setP2pFile({ file, filename: record.manifest.filename });
+      setP2pModalOpen(true);
+    } catch (e: any) {
+      setStatusMessage({ type: 'error', text: `Could not prepare file for P2P streaming: ${e.message}` });
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeAccounts = accounts.filter(a => activeAccountIds.has(a.id) && !a.isExpired);
 
-  // Load existing manifests
+  // Load existing manifests from IndexedDB
   useEffect(() => {
     get('matrix_frankenstein_shards').then(val => {
       if (val && Array.isArray(val)) {
         setShardedRecords(val);
+      } else {
+        setShardedRecords([]);
       }
     });
+
+    const handleTestUpload = (e: any) => {
+      if (e.detail?.file) {
+        handleBatchUploadFiles([e.detail.file]);
+      }
+    };
+    window.addEventListener('MATRIX_START_TEST_UPLOAD', handleTestUpload);
+    return () => window.removeEventListener('MATRIX_START_TEST_UPLOAD', handleTestUpload);
   }, []);
 
   // Fetch live storage quotas
@@ -681,12 +825,6 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
   const handleGenerateMagicLink = async (record: StoredManifestRecord) => {
     // Pass customClientId so peer doesn't need to BYOK
     const cId = (props as any).customClientId || '';
-    setStatusMessage({ type: 'info', text: 'Updating chunk permissions for public zero-auth access...' });
-    try {
-      await makeManifestChunksPublic(record.manifest, accounts);
-    } catch (e) {
-      console.warn('Could not make all chunks public', e);
-    }
     try {
       const link = await createMagicShareLink(record.manifest, cId);
       setMagicLinkModal({
@@ -696,7 +834,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
       });
       setCopiedMagicLink(false);
     } catch (err: any) {
-      setStatusMessage({ type: 'error', text: `Could not generate Magic Link: ${err.message}` });
+      setStatusMessage({ type: 'error', text: `Could not generate Device-Sync Link: ${err.message}` });
     }
   };
 
@@ -941,15 +1079,15 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
             <button
               onClick={() => setActiveTab('frankenstein')}
               className={`pb-2.5 text-xs font-semibold transition-all relative ${
-                activeTab === 'frankenstein' ? 'text-emerald-700' : 'text-slate-500 hover:text-slate-800'
+                activeTab === 'frankenstein' ? 'text-indigo-700' : 'text-slate-500 hover:text-slate-800'
               }`}
             >
               <span className="flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5 text-emerald-600" />
-                Multi-Cloud Virtual Hard Disks ({shardedRecords.length})
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                Personal Multi-Cloud Vault ({shardedRecords.length})
               </span>
               {activeTab === 'frankenstein' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-full" />
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600 rounded-full" />
               )}
             </button>
 
@@ -960,8 +1098,8 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
               }`}
             >
               <span className="flex items-center gap-1.5">
-                <Layers className="w-3.5 h-3.5" />
-                Raw Drive Files ({filteredFiles.length})
+                <Globe className="w-3.5 h-3.5 text-emerald-600" />
+                Direct Share Drive ({filteredFiles.length})
               </span>
               {activeTab === 'all' && (
                 <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-full" />
@@ -969,20 +1107,100 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
             </button>
           </div>
 
-          <button
-            onClick={refreshStorageQuotas}
-            disabled={isLoadingQuotas}
-            className="text-[11px] font-medium text-slate-500 hover:text-slate-900 flex items-center gap-1 cursor-pointer pb-2"
-          >
-            <RefreshCw size={12} className={isLoadingQuotas ? 'animate-spin text-emerald-600' : ''} />
-            <span>Refresh Quotas</span>
-          </button>
+          <div className="flex items-center gap-3">
+            {activeAccounts.length > 1 && (
+              <button
+                onClick={() => setRebalanceModalOpen(true)}
+                className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer pb-2"
+                title="Evaluate and balance quota usage across clouds"
+              >
+                <Scale size={12} />
+                <span>Rebalance Quotas</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => {
+                setP2pFile(null);
+                setP2pModalOpen(true);
+              }}
+              className="text-[11px] font-semibold text-purple-600 hover:text-purple-800 flex items-center gap-1 cursor-pointer pb-2"
+              title="Stream files peer-to-peer over WebRTC data channel"
+            >
+              <Radio size={12} />
+              <span>P2P Direct Tunnel</span>
+            </button>
+
+            {mountedFolder.isSupported && (
+              <button
+                onClick={mountedFolder.isMounted ? handleUnmountLocalFolder : handleMountLocalFolder}
+                className={`text-[11px] font-semibold flex items-center gap-1 cursor-pointer pb-2 ${
+                  mountedFolder.isMounted
+                    ? 'text-indigo-600 hover:text-indigo-800'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Mount local directory via File System Access API"
+              >
+                <FolderSync size={12} />
+                <span>{mountedFolder.isMounted ? `Mounted: ${mountedFolder.folderName}` : 'Mount Desktop Folder'}</span>
+              </button>
+            )}
+
+            <button
+              onClick={refreshStorageQuotas}
+              disabled={isLoadingQuotas}
+              className="text-[11px] font-medium text-slate-500 hover:text-slate-900 flex items-center gap-1 cursor-pointer pb-2"
+            >
+              <RefreshCw size={12} className={isLoadingQuotas ? 'animate-spin text-emerald-600' : ''} />
+              <span>Refresh Quotas</span>
+            </button>
+          </div>
         </div>
       </div>
 
       {/* BODY CONTENT */}
       <div className="p-6 flex-1">
         <div className="max-w-6xl mx-auto space-y-6">
+          {/* Desktop Mounted Folder Banner */}
+          {mountedFolder.isMounted && (
+            <div className="bg-indigo-50/80 border border-indigo-200/90 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                  <FolderCheck size={16} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-indigo-950">Local Folder Mounted:</span>
+                    <span className="font-mono text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
+                      {mountedFolder.folderName}
+                    </span>
+                    <span className="text-slate-500 font-medium">({mountedFolder.files.length} file{mountedFolder.files.length !== 1 ? 's' : ''})</span>
+                  </div>
+                  <p className="text-[11px] text-indigo-700 mt-0.5">
+                    Native File System Access active. 1-click sync local files directly into the RAID-5 multi-cloud vault.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleSyncMountedFolderFiles}
+                  disabled={isSyncingFolder || mountedFolder.files.length === 0}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold text-xs rounded-xl shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                >
+                  {isSyncingFolder ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+                  <span>Sync {mountedFolder.files.length} Files to Vault</span>
+                </button>
+                <button
+                  onClick={handleUnmountLocalFolder}
+                  className="px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 font-semibold text-xs rounded-xl transition-colors cursor-pointer"
+                >
+                  Unmount
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Status Message Banner */}
           {statusMessage && (
             <div
@@ -1143,21 +1361,21 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                 </div>
               </div>
 
-              {/* P2P MAGIC LINK IMPORT BOX */}
+              {/* PERSONAL DEVICE-SYNC RESTORATION BOX */}
               <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white rounded-2xl p-5 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2 text-xs font-bold text-indigo-300">
                     <Share2 size={14} />
-                    <span>Import Shared Magic Link</span>
+                    <span>Sync Personal Vault Across Devices</span>
                   </div>
                   <p className="text-xs text-slate-300">
-                    Paste a Magic Link from another device or collaborator to instantly reassemble and decrypt.
+                    Paste your personal device-sync link to reconstruct and restore vaulted files on this device.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 w-full sm:w-auto">
                   <input
                     type="text"
-                    placeholder="https://...#magic=..."
+                    placeholder="https://...#m=..."
                     value={importMagicInput}
                     onChange={e => setImportMagicInput(e.target.value)}
                     className="px-3 py-1.5 rounded-xl bg-white/10 border border-white/20 text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 w-full sm:w-64"
@@ -1166,7 +1384,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                     onClick={handleImportMagicLink}
                     className="px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-semibold shrink-0 cursor-pointer"
                   >
-                    Import
+                    Restore File
                   </button>
                 </div>
               </div>
@@ -1226,11 +1444,6 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                             const matchingRecords = shardedRecords.filter(r => selectedVaultFileIds.has(r.id));
                             const selectedItems: MultiShareItem[] = [];
                             for (const r of matchingRecords) {
-                              try {
-                                await makeManifestChunksPublic(r.manifest, accounts);
-                              } catch (e) {
-                                console.warn('Could not make all chunks public', e);
-                              }
                               const url = await createMagicShareLink(r.manifest, customClientId);
                               selectedItems.push({
                                 id: r.id,
@@ -1242,14 +1455,14 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                             }
                             setMultiShareModal({
                               isOpen: true,
-                              title: `Share ${selectedItems.length} Vaulted Files`,
+                              title: `Export ${selectedItems.length} Device-Sync Links`,
                               items: selectedItems,
                             });
                           }}
                           className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
                         >
                           <Share2 size={13} />
-                          <span>Multi-Share ({selectedVaultFileIds.size})</span>
+                          <span>Export Sync Links ({selectedVaultFileIds.size})</span>
                         </button>
 
                         <button
@@ -1371,8 +1584,8 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                         },
                                         {
                                           icon: <Share2 size={18} className="text-indigo-600" />,
-                                          label: 'Share P2P Magic Link',
-                                          sublabel: 'Self-contained zero-auth link',
+                                          label: 'Export Device-Sync Link',
+                                          sublabel: 'Restore on your other devices',
                                           onClick: () => handleGenerateMagicLink(record),
                                         },
                                         {
@@ -1421,8 +1634,32 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                       className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left cursor-pointer"
                                     >
                                       <Share2 size={13} className="text-indigo-600 shrink-0" />
-                                      <span>Share P2P Magic Link</span>
+                                      <span>Export Device-Sync Link</span>
                                     </button>
+
+                                    <button
+                                      onClick={() => {
+                                        setActiveVaultMenuId(null);
+                                        handleP2PStreamVaultFile(record);
+                                      }}
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-purple-50 hover:text-purple-700 transition-colors text-left cursor-pointer"
+                                    >
+                                      <Radio size={13} className="text-purple-600 shrink-0" />
+                                      <span>Stream via WebRTC P2P</span>
+                                    </button>
+
+                                    {mountedFolder.isMounted && (
+                                      <button
+                                        onClick={() => {
+                                          setActiveVaultMenuId(null);
+                                          handleExportToMountedFolder(record);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left cursor-pointer"
+                                      >
+                                        <FolderSync size={13} className="text-indigo-600 shrink-0" />
+                                        <span>Export to &quot;{mountedFolder.folderName}&quot;</span>
+                                      </button>
+                                    )}
 
                                     <button
                                       disabled={isVerifyingThis}
@@ -1611,7 +1848,17 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                           <FileText className="w-4 h-4 text-slate-400 shrink-0" />
                           <div className="min-w-0">
                             <div className="text-xs font-semibold text-slate-800 truncate max-w-[200px] sm:max-w-[340px]">{file.name}</div>
-                            <div className="text-[11px] text-slate-400 truncate">{file.accountEmail}</div>
+                            <div className="flex items-center gap-1.5 text-[11px] text-slate-400 truncate">
+                              <span>{file.accountEmail}</span>
+                              {file.provider && file.provider !== 'google' && (
+                                <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
+                                  file.provider === 'onedrive' ? 'bg-blue-100 text-blue-800' : 'bg-sky-100 text-sky-800'
+                                }`}>
+                                  {file.provider}
+                                </span>
+                              )}
+                              {file.size ? <span>• {(file.size / (1024 * 1024)).toFixed(1)} MB</span> : null}
+                            </div>
                           </div>
                         </div>
                       
@@ -1779,8 +2026,8 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                     <Share2 size={16} />
                   </div>
                   <div>
-                    <h3 className="text-sm font-bold text-slate-900">P2P Magic Share Link</h3>
-                    <p className="text-xs text-slate-400">Decentralized Direct Download</p>
+                    <h3 className="text-sm font-bold text-slate-900">Personal Device-Sync Link</h3>
+                    <p className="text-xs text-slate-400">Cross-Device Vault Reconstitution</p>
                   </div>
                 </div>
                 <button
@@ -1792,9 +2039,8 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
               </div>
 
               <p className="text-xs text-slate-600 leading-relaxed">
-                This self-contained Magic Link embeds the chunk blueprints and the local 256-bit decryption key
-                in the URL hash. Send this to any browser to reassemble directly from Google Drive / OneDrive / Dropbox
-                with zero server proxy!
+                This self-contained link encodes the encrypted chunk blueprint and AES-256 decryption key in the URL hash.
+                Open this on another device or browser where your accounts are connected to reconstruct this file. Your shards remain 100% private in your personal cloud accounts.
               </p>
 
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] break-all text-slate-700 max-h-24 overflow-y-auto">
@@ -1818,7 +2064,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                   className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs"
                 >
                   {copiedMagicLink ? <Check size={13} /> : <Copy size={13} />}
-                  <span>{copiedMagicLink ? 'Copied to Clipboard!' : 'Copy Magic Link'}</span>
+                  <span>{copiedMagicLink ? 'Copied to Clipboard!' : 'Copy Device-Sync Link'}</span>
                 </button>
               </div>
             </motion.div>
@@ -1939,6 +2185,36 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
         title={mobileSheet.title}
         subtitle={mobileSheet.subtitle}
         items={mobileSheet.items}
+      />
+
+      {/* Direct WebRTC P2P Transfer Modal */}
+      <P2PTunnelModal
+        isOpen={p2pModalOpen}
+        onClose={() => {
+          setP2pModalOpen(false);
+          setP2pFile(null);
+        }}
+        preselectedFile={p2pFile?.file}
+        preselectedFilename={p2pFile?.filename}
+        onFileReceived={(received) => {
+          setStatusMessage({
+            type: 'success',
+            text: `Received "${received.name}" (${(received.size / (1024 * 1024)).toFixed(2)} MB) directly via WebRTC P2P tunnel!`,
+          });
+        }}
+      />
+
+      {/* Autonomous Quota Rebalancing Daemon Modal */}
+      <QuotaRebalanceModal
+        isOpen={rebalanceModalOpen}
+        onClose={() => setRebalanceModalOpen(false)}
+        accounts={activeAccounts}
+        onRebalanceComplete={() => {
+          refreshStorageQuotas();
+          get('matrix_frankenstein_shards').then(val => {
+            if (val && Array.isArray(val)) setShardedRecords(val);
+          });
+        }}
       />
     </div>
   );

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Shield, Key, Lock, Cloud, Plus, CheckCircle2, Trash2 } from 'lucide-react';
+import { Shield, Key, Lock, Cloud, Plus, Trash2 } from 'lucide-react';
 import { AccountToken } from '../types';
+import { ConnectMultiCloudModal } from '../components/ConnectMultiCloudModal';
 
 interface SettingsViewProps {
   isByokMode: boolean;
@@ -23,28 +24,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onAddMultiCloudAccount,
   onRemoveAccount,
 }) => {
-  // Manual token entry modal states for OneDrive and Dropbox
-  const [providerModal, setProviderModal] = useState<'onedrive' | 'dropbox' | null>(null);
-  const [tokenEmail, setTokenEmail] = useState('');
-  const [tokenKey, setTokenKey] = useState('');
+  // Real PKCE Connect Modal state
+  const [connectModalProvider, setConnectModalProvider] = useState<'onedrive' | 'dropbox' | null>(null);
 
-  const handleSaveMultiCloudToken = () => {
-    if (!tokenEmail || !tokenKey || !providerModal) return;
-
-    const newAcc: AccountToken = {
-      id: `${providerModal}_${Date.now()}`,
-      email: tokenEmail,
-      name: `${providerModal.toUpperCase()} Account`,
-      photoURL: null,
-      accessToken: tokenKey.trim(),
-      provider: providerModal,
-    };
-
-    onAddMultiCloudAccount(newAcc);
-    setProviderModal(null);
-    setTokenEmail('');
-    setTokenKey('');
-  };
+  // Multi-Cloud BYOK Keys in localStorage
+  const [onedriveClientId, setOnedriveClientId] = useState(() => localStorage.getItem('matrix_onedrive_client_id') || '');
+  const [dropboxClientId, setDropboxClientId] = useState(() => localStorage.getItem('matrix_dropbox_client_id') || '');
 
   return (
     <div className="flex-1 h-full bg-[#F8FAFC] text-slate-800 flex flex-col font-sans overflow-y-auto">
@@ -73,13 +58,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setProviderModal('onedrive')}
+                onClick={() => setConnectModalProvider('onedrive')}
                 className="px-2.5 py-1 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold flex items-center gap-1 cursor-pointer"
               >
                 <Plus size={12} /> Connect OneDrive
               </button>
               <button
-                onClick={() => setProviderModal('dropbox')}
+                onClick={() => setConnectModalProvider('dropbox')}
                 className="px-2.5 py-1 rounded-lg border border-sky-200 bg-sky-50 hover:bg-sky-100 text-sky-700 text-xs font-semibold flex items-center gap-1 cursor-pointer"
               >
                 <Plus size={12} /> Connect Dropbox
@@ -109,17 +94,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         {provider === 'onedrive' ? 'MS' : provider === 'dropbox' ? 'DB' : 'GD'}
                       </div>
                       <div>
-                        <div className="font-semibold text-xs text-slate-800">{acc.email}</div>
-                        <div className="text-[11px] text-slate-400 uppercase tracking-wider font-bold">
-                          {provider}
+                        <div className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
+                          <span>{acc.email}</span>
+                          <span
+                            className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
+                              provider === 'onedrive'
+                                ? 'bg-blue-100 text-blue-800'
+                                : provider === 'dropbox'
+                                ? 'bg-sky-100 text-sky-800'
+                                : 'bg-emerald-100 text-emerald-800'
+                            }`}
+                          >
+                            {provider}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {acc.quota
+                            ? `Storage: ${(acc.quota.usedBytes / 1024 / 1024 / 1024).toFixed(1)} GB / ${(
+                                acc.quota.totalBytes /
+                                1024 /
+                                1024 /
+                                1024
+                              ).toFixed(1)} GB`
+                            : 'Storage active'}
                         </div>
                       </div>
                     </div>
+
                     <button
                       onClick={() => onRemoveAccount(acc.id)}
-                      className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors cursor-pointer"
+                      className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-white transition-colors cursor-pointer"
+                      title="Remove Account"
                     >
-                      <Trash2 size={14} />
+                      <Trash2 size={13} />
                     </button>
                   </div>
                 );
@@ -133,21 +140,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="p-6 border-b border-slate-100">
             <div className="flex items-center gap-2 mb-1">
               <Key className="w-4 h-4 text-blue-600" />
-              <h2 className="text-sm font-bold text-slate-900">Bring Your Own Key (BYOK) - Google OAuth</h2>
+              <h2 className="text-sm font-bold text-slate-900">Optional: Bring Your Own Key (BYOK)</h2>
             </div>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Matrix operates purely in your browser runtime without backend database servers. By default, it runs with
-              the credentials configured in your project. You can provide your own custom Google OAuth Client ID to
-              connect unlimited organizational accounts and ensure total sovereignty.
+            <p className="text-xs text-slate-500 leading-relaxed mb-3">
+              Matrix operates purely in your browser runtime without backend database servers. You can explore and use the app with default credentials or dev tokens anytime.
             </p>
+            <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-800 leading-relaxed">
+              ✨ <strong>100% Optional & Flexible:</strong> You do <em>not</em> need to configure all 3 providers or keys. If you only want Google Drive, it works 100%. If you only want OneDrive or Dropbox, it works 100%. The app will never block or stop working if you don't add all keys.
+            </div>
           </div>
 
           <div className="p-6 bg-slate-50/60 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <div className="font-semibold text-slate-900 text-xs">Custom Google Client ID Mode</div>
+                <div className="font-semibold text-slate-900 text-xs">Custom Multi-Cloud Client IDs</div>
                 <div className="text-[11px] text-slate-400 mt-0.5">
-                  Bypass shared origin quotas with your custom Google Cloud Console project
+                  Bypass shared origin quotas with your custom Cloud Console projects
                 </div>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
@@ -162,7 +170,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             {isByokMode && (
-              <div className="pt-4 border-t border-slate-200 space-y-3">
+              <div className="pt-4 border-t border-slate-200 space-y-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Google OAuth Client ID</label>
                   <input
@@ -172,19 +180,57 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     placeholder="e.g. 123456789-abcde.apps.googleusercontent.com"
                     className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none font-mono"
                   />
+                  <div className="text-[11px] text-slate-500 flex items-center flex-wrap gap-1.5 mt-1.5">
+                    <span>Google Scopes:</span>
+                    <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">drive</code>
+                    <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">gmail.send</code>
+                    <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">gmail.modify</code>
+                  </div>
                 </div>
 
-                <div className="text-[11px] text-slate-500 flex items-center flex-wrap gap-1.5">
-                  <span>Required Scopes:</span>
-                  <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">drive</code>
-                  <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">gmail.send</code>
-                  <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">gmail.modify</code>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Microsoft Azure Application (Client) ID</label>
+                  <input
+                    type="text"
+                    value={onedriveClientId}
+                    onChange={e => {
+                      setOnedriveClientId(e.target.value);
+                      localStorage.setItem('matrix_onedrive_client_id', e.target.value.trim());
+                    }}
+                    placeholder="e.g. 1a2b3c4d-5678-90ab-cdef-1234567890ab"
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none font-mono"
+                  />
+                  <div className="text-[11px] text-slate-500 flex items-center flex-wrap gap-1.5 mt-1.5">
+                    <span>OneDrive Scopes:</span>
+                    <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">Files.ReadWrite</code>
+                    <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">Mail.ReadWrite</code>
+                    <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">User.Read</code>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Dropbox App Key</label>
+                  <input
+                    type="text"
+                    value={dropboxClientId}
+                    onChange={e => {
+                      setDropboxClientId(e.target.value);
+                      localStorage.setItem('matrix_dropbox_client_id', e.target.value.trim());
+                    }}
+                    placeholder="e.g. k7m9pq3nx8y5abc"
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none font-mono"
+                  />
+                  <div className="text-[11px] text-slate-500 flex items-center flex-wrap gap-1.5 mt-1.5">
+                    <span>Dropbox Scopes:</span>
+                    <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">files.content.write</code>
+                    <code className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">files.content.read</code>
+                  </div>
                 </div>
 
                 {handleLogin && customClientId && customClientId.trim() !== '' && (
                   <button
                     onClick={() => handleLogin(true)}
-                    className="mt-4 w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                    className="mt-2 w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors cursor-pointer"
                   >
                     Save & Authenticate Custom Profile
                   </button>
@@ -210,68 +256,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </div>
 
-      {/* MODAL TO ADD ONEDRIVE / DROPBOX TOKEN */}
-      {providerModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-slate-900">
-                Connect {providerModal === 'onedrive' ? 'Microsoft OneDrive' : 'Dropbox'} Token
-              </h3>
-              <button
-                onClick={() => setProviderModal(null)}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer text-sm"
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-500">
-              Enter your {providerModal === 'onedrive' ? 'Microsoft Graph API access token' : 'Dropbox API access token'} to
-              pool its quota into your RAID-5 distributed storage array.
-            </p>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Account Label / Email</label>
-                <input
-                  type="text"
-                  value={tokenEmail}
-                  onChange={e => setTokenEmail(e.target.value)}
-                  placeholder={`user@${providerModal === 'onedrive' ? 'outlook.com' : 'example.com'}`}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Access Token / Bearer Key</label>
-                <textarea
-                  value={tokenKey}
-                  onChange={e => setTokenKey(e.target.value)}
-                  rows={3}
-                  placeholder="Paste OAuth access token..."
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setProviderModal(null)}
-                className="px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveMultiCloudToken}
-                disabled={!tokenEmail || !tokenKey}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs"
-              >
-                Save Provider Account
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* CONNECT ONEDRIVE / DROPBOX PKCE MODAL */}
+      {connectModalProvider && (
+        <ConnectMultiCloudModal
+          isOpen={true}
+          initialProvider={connectModalProvider}
+          onClose={() => setConnectModalProvider(null)}
+          onAccountAdded={(newAcc) => {
+            onAddMultiCloudAccount(newAcc);
+            setConnectModalProvider(null);
+          }}
+        />
       )}
     </div>
   );

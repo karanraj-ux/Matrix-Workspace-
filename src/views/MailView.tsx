@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Mail, MailOpen, Archive, CheckSquare, Reply, X, Loader2, ArrowLeft, Zap } from 'lucide-react';
 import { GmailMessage } from '../types';
 
@@ -36,6 +36,17 @@ export const MailView: React.FC<MailViewProps> = ({
   onAutomateSender,
   isAutomating,
 }) => {
+  const [providerFilter, setProviderFilter] = useState<'all' | 'google' | 'onedrive'>('all');
+
+  const gmailCount = filteredEmails.filter(e => !e.provider || e.provider === 'google').length;
+  const outlookCount = filteredEmails.filter(e => e.provider === 'onedrive').length;
+
+  const displayedEmails = filteredEmails.filter(email => {
+    if (providerFilter === 'all') return true;
+    if (providerFilter === 'onedrive') return email.provider === 'onedrive';
+    return !email.provider || email.provider === 'google';
+  });
+
   return (
     <div className="flex-1 h-full bg-[#F8FAFC] flex overflow-hidden font-sans">
       {/* Mail List Panel */}
@@ -44,36 +55,78 @@ export const MailView: React.FC<MailViewProps> = ({
           activeEmail ? 'hidden md:flex md:w-[380px] lg:w-[420px] shrink-0' : 'w-full flex-1'
         }`}
       >
-        <div className="h-14 border-b border-slate-100 flex items-center justify-between px-4 shrink-0 bg-white">
-          <div className="flex items-center gap-2">
-            <span className="p-1 rounded-md bg-blue-50 text-blue-600">
-              <Mail className="w-4 h-4" />
-            </span>
-            <h2 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-              Unified Inbox
-            </h2>
-            <span className="text-[11px] font-semibold text-slate-500 px-1.5 py-0.5 rounded-full bg-slate-100">
-              {filteredEmails.length}
-            </span>
+        <div className="border-b border-slate-100 p-3 shrink-0 bg-white space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="p-1 rounded-md bg-blue-50 text-blue-600">
+                <Mail className="w-4 h-4" />
+              </span>
+              <h2 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                Unified Inbox
+              </h2>
+              <span className="text-[11px] font-semibold text-slate-500 px-1.5 py-0.5 rounded-full bg-slate-100">
+                {displayedEmails.length}
+              </span>
+            </div>
+            {isLoadingStreams && <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />}
           </div>
-          {isLoadingStreams && <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />}
+
+          {/* Provider Filter Tabs */}
+          <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg text-[11px]">
+            <button
+              onClick={() => setProviderFilter('all')}
+              className={`flex-1 py-1 px-2 rounded-md font-semibold text-center transition-all cursor-pointer ${
+                providerFilter === 'all'
+                  ? 'bg-white text-slate-900 shadow-2xs'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              All ({filteredEmails.length})
+            </button>
+            <button
+              onClick={() => setProviderFilter('google')}
+              className={`flex-1 py-1 px-2 rounded-md font-semibold text-center transition-all cursor-pointer ${
+                providerFilter === 'google'
+                  ? 'bg-white text-rose-700 shadow-2xs'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Gmail ({gmailCount})
+            </button>
+            <button
+              onClick={() => setProviderFilter('onedrive')}
+              className={`flex-1 py-1 px-2 rounded-md font-semibold text-center transition-all cursor-pointer ${
+                providerFilter === 'onedrive'
+                  ? 'bg-white text-blue-700 shadow-2xs'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Outlook ({outlookCount})
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {activeAccountIds.size === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center px-4">
-              <p className="text-xs">Select an account in the left panel to load messages.</p>
+            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center px-6 py-12 space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100">
+                <Mail className="w-6 h-6 stroke-1" />
+              </div>
+              <p className="text-sm font-bold text-slate-800">No Account Selected</p>
+              <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
+                Connect or select your Google Workspace or Microsoft Outlook account in the sidebar to stream messages.
+              </p>
             </div>
-          ) : filteredEmails.length === 0 && !isLoadingStreams ? (
-            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center py-12">
-              <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-2 border border-emerald-100">
+          ) : displayedEmails.length === 0 && !isLoadingStreams ? (
+            <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center py-12 space-y-2">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center border border-emerald-100">
                 <CheckSquare className="w-6 h-6" />
               </div>
               <p className="text-sm font-bold text-slate-800">Inbox Zero</p>
-              <p className="text-xs text-slate-400 mt-0.5">All messages have been processed</p>
+              <p className="text-xs text-slate-500">All messages processed or none matching filter</p>
             </div>
           ) : (
-            filteredEmails.map(email => {
+            displayedEmails.map(email => {
               const mailDate = new Date(email.date || email.timestamp || Date.now());
               const timeDisplay =
                 mailDate.toDateString() === new Date().toDateString()
@@ -81,6 +134,7 @@ export const MailView: React.FC<MailViewProps> = ({
                   : mailDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
 
               const isActive = activeEmail?.id === email.id;
+              const isOutlook = email.provider === 'onedrive';
 
               return (
                 <div
@@ -93,12 +147,23 @@ export const MailView: React.FC<MailViewProps> = ({
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1.5">
-                    <span
-                      className="text-[10px] font-semibold text-slate-500 truncate max-w-[180px]"
-                      title={email.accountEmail}
-                    >
-                      {email.accountEmail}
-                    </span>
+                    <div className="flex items-center gap-1.5 truncate max-w-[200px]">
+                      <span
+                        className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase shrink-0 ${
+                          isOutlook
+                            ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                            : 'bg-rose-100 text-rose-800 border border-rose-200'
+                        }`}
+                      >
+                        {isOutlook ? 'Outlook' : 'Gmail'}
+                      </span>
+                      <span
+                        className="text-[10px] font-semibold text-slate-500 truncate"
+                        title={email.accountEmail}
+                      >
+                        {email.accountEmail}
+                      </span>
+                    </div>
                     <span className="text-[10px] font-medium text-slate-400 shrink-0">
                       {timeDisplay}
                     </span>

@@ -15,6 +15,7 @@ import {
   Cloud,
 } from 'lucide-react';
 import { AccountToken } from '../types';
+import { UnifiedStoragePoolBar } from './UnifiedStoragePoolBar';
 
 interface SidebarProps {
   currentView: 'dashboard' | 'mail' | 'drive' | 'settings' | 'automation';
@@ -289,8 +290,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Footer info & signout */}
-        <div className="p-3 border-t border-slate-100 shrink-0">
+        {/* Compact Unified Storage Bar & signout */}
+        <div className="p-3 border-t border-slate-100 shrink-0 space-y-2.5">
+          {accounts.length > 0 && (
+            <UnifiedStoragePoolBar accounts={accounts} quotas={{}} compact={true} />
+          )}
+
           <button
             onClick={handleLogoutAll}
             className="w-full flex items-center justify-center gap-2 py-2 text-xs font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all cursor-pointer"

@@ -97,10 +97,10 @@ export const PublicMagicDownloadModal: React.FC<PublicMagicDownloadModalProps> =
             </div>
             <div>
               <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-bold">
-                <Shield size={11} /> Zero-Knowledge Decentralized Link
+                <Shield size={11} /> Zero-Knowledge Sovereign Link
               </div>
               <h3 className="text-lg font-bold text-slate-900 leading-snug mt-0.5">
-                P2P Magic Download
+                Vault Reconstitution & Download
               </h3>
             </div>
           </div>
@@ -180,7 +180,7 @@ export const PublicMagicDownloadModal: React.FC<PublicMagicDownloadModalProps> =
               {onConnectAccount && !hasConnectedAccount && (
                 <div className="pt-1.5 border-t border-red-200/70 flex flex-col gap-1.5">
                   <p className="text-[11px] text-red-700">
-                    If this file is private or requires Google authorization, connecting an account allows instant authenticated retrieval:
+                    If this file is striped across your private accounts, sign into Google to authenticate private shard retrieval:
                   </p>
                   <button
                     onClick={() => {

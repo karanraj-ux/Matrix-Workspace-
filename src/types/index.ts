@@ -16,6 +16,9 @@ export interface AccountToken {
   provider?: CloudProvider; // Default: 'google'
   isExpired?: boolean;
   quota?: StorageQuotaInfo;
+  refreshToken?: string;
+  expiresAt?: number;
+  clientId?: string;
 }
 
 export interface GmailMessage {
@@ -31,6 +34,7 @@ export interface GmailMessage {
   timestamp: number;
   messageId?: string;
   references?: string;
+  provider?: CloudProvider;
   attachments?: { attachmentId: string; filename: string; mimeType: string; size: number }[];
 }
 
@@ -46,4 +50,9 @@ export interface DriveFile {
   accountEmail: string;
   accountPhoto?: string | null;
   timestamp: number;
+  size?: number;
+  provider?: CloudProvider;
+  downloadPath?: string;
 }
+
+export type CloudFileItem = DriveFile;
