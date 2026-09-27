@@ -447,8 +447,10 @@ export const downloadShardedFile = async (
     if (!rawBuf && (chunk.provider === 'google' || !chunk.provider)) {
       try {
         const proxyRes = await fetch(`/api/public-chunk?fileId=${encodeURIComponent(chunk.driveFileId)}`);
-        if (proxyRes.ok) {
-          rawBuf = await proxyRes.arrayBuffer();
+        const cType = proxyRes.headers.get('content-type') || '';
+        if (proxyRes.ok && !cType.toLowerCase().includes('text/html')) {
+          const buf = await proxyRes.arrayBuffer();
+          if (buf.byteLength > 0) rawBuf = buf;
         } else {
           const errText = await proxyRes.text().catch(() => '');
           console.warn(`Proxy chunk fetch failed with status ${proxyRes.status}:`, errText);
@@ -463,19 +465,24 @@ export const downloadShardedFile = async (
       try {
         const directPublicUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(chunk.driveFileId)}&export=download&authuser=0`;
         const res = await fetch(directPublicUrl);
-        if (res.ok) {
-          rawBuf = await res.arrayBuffer();
+        const cType = res.headers.get('content-type') || '';
+        if (res.ok && !cType.toLowerCase().includes('text/html')) {
+          const buf = await res.arrayBuffer();
+          if (buf.byteLength > 0) rawBuf = buf;
         }
       } catch {
         // Expected CORS failure in some browser environments
       }
     }
 
-    if (!rawBuf) {
-      throw lastError || new Error(`Public retrieval failed for Chunk ${chunk.chunkIndex + 1}. The file may require Google sign-in to access.`);
+    if (!rawBuf || rawBuf.byteLength === 0) {
+      throw lastError || new Error(`Public retrieval failed for Chunk ${chunk.chunkIndex + 1}. The file may be deleted or require sign-in.`);
     }
 
     if (chunk.cryptoMeta?.encrypted && masterKey) {
+      if (!chunk.cryptoMeta.iv?.length || !chunk.cryptoMeta.salt?.length) {
+        throw new Error(`Corrupted encryption metadata for Chunk ${chunk.chunkIndex + 1}`);
+      }
       return await decryptChunkWorker(
         rawBuf,
         masterKey,
@@ -518,7 +525,7 @@ export const downloadShardedFile = async (
 
     try {
       const parityBuf = await fetchAndDecryptChunk(manifest.parityChunk);
-      const surviving = chunkBuffers.filter((b): b is ArrayBuffer => b !== null);
+      const surviving = chunkBuffers.filter((b): b is ArrayBuffer => b !== null && b.byteLength > 0);
       const expectedSize = manifest.chunks[missingIndex].chunkSizeBytes;
 
       const reconstructedBuf = await reconstructChunkWorker(surviving, parityBuf, expectedSize);
@@ -532,7 +539,7 @@ export const downloadShardedFile = async (
       );
     } catch (reconstructErr: any) {
       throw new Error(
-        `Failed to recover missing chunk ${missingIndex} via parity: ${reconstructErr.message}`
+        `Failed to recover missing chunk ${missingIndex + 1} via RAID-5 parity: ${reconstructErr.message}`
       );
     }
   } else if (failedChunkIndices.length > 1) {
@@ -541,7 +548,7 @@ export const downloadShardedFile = async (
     );
   } else if (failedChunkIndices.length === 1 && !manifest.parityChunk) {
     throw new Error(
-      `Chunk ${failedChunkIndices[0]} is unavailable and this file was uploaded without RAID-5 parity.`
+      `Chunk ${failedChunkIndices[0] + 1} is unavailable and this file was uploaded without RAID-5 parity.`
     );
   }
 
@@ -721,8 +728,9 @@ export const downloadShardedFileStream = async (
 
     for (let i = 0; i < totalChunks; i++) {
       const chunk = manifest.chunks[i];
-      const acc = accounts.find(a => a.id === chunk.accountId);
-      if (!acc) throw new Error(`Account missing for chunk ${i}`);
+      const acc = accounts.find(a => a.id === chunk.accountId || (chunk.accountEmail && a.email === chunk.accountEmail))
+        || accounts.find(a => !a.isExpired && (a.provider || 'google') === (chunk.provider || 'google'));
+      if (!acc) throw new Error(`Account missing for chunk ${i + 1}`);
 
       onProgress((completed / totalChunks) * 100, completed, totalChunks, `Downloading chunk ${i + 1}...`);
       

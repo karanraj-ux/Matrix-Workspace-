@@ -110,9 +110,13 @@ export function reconstructMissingChunk(
   const allSurviving = [...survivingChunks, parityChunk];
   const reconstructed = computeParityChunk(allSurviving);
 
-  // Trim to expected original chunk size if needed
+  // Trim or pad to exact expected original chunk size
   if (reconstructed.byteLength > expectedSize) {
     return reconstructed.slice(0, expectedSize);
+  } else if (reconstructed.byteLength < expectedSize) {
+    const padded = new Uint8Array(expectedSize);
+    padded.set(new Uint8Array(reconstructed));
+    return padded.buffer;
   }
   return reconstructed;
 }

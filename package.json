@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
+    "@noble/post-quantum": "^0.7.1",
     "@react-oauth/google": "^0.13.5",
     "@tailwindcss/vite": "^4.1.14",
     "@types/qrcode": "^1.5.6",

@@ -17,6 +17,7 @@ import {
   Radio,
   Scale,
   FolderSync,
+  Cpu,
 } from 'lucide-react';
 import { GmailMessage, DriveFile } from '../types';
 
@@ -87,6 +88,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const actionItems = [
     { id: 'act-compose', type: 'action', title: 'Compose Message', subtitle: 'Send from Google or Outlook', icon: Plus, action: onOpenCompose },
     { id: 'act-upload', type: 'action', title: 'Upload File to RAID-5 Vault', subtitle: 'Encrypt with AES-256 and stripe', icon: Lock, action: onTriggerUpload },
+    { id: 'act-quantum', type: 'action', title: 'Quantum Cryptanalysis Bench', subtitle: "Shor's algorithm vs NIST ML-KEM-768 lattice verification", icon: Cpu, action: () => onNavigate('drive') },
     { id: 'act-p2p', type: 'action', title: 'WebRTC P2P Direct Tunnel', subtitle: 'Direct browser-to-browser encrypted streaming', icon: Radio, action: () => onNavigate('drive') },
     { id: 'act-rebalance', type: 'action', title: 'Autonomous Quota Rebalancer', subtitle: 'Balance storage capacity across cloud providers', icon: Scale, action: () => onNavigate('drive') },
     { id: 'act-mount', type: 'action', title: 'Mount Local Desktop Folder', subtitle: 'Native File System Access API integration', icon: FolderSync, action: () => onNavigate('drive') },

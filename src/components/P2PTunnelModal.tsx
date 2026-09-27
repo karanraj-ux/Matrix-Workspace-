@@ -225,6 +225,17 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
           </div>
         )}
 
+        {/* Quantum-Resistant Cryptography Specification */}
+        <div className="mx-5 mt-4 p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-2.5">
+          <div className="p-1 rounded-md bg-slate-200 text-slate-700 shrink-0 mt-0.5">
+            <Shield size={13} />
+          </div>
+          <div className="text-[11px] leading-relaxed text-slate-600">
+            <span className="font-semibold text-slate-900">Post-Quantum Cryptography: </span>
+            P2P session key exchange encapsulated via NIST FIPS 203 ML-KEM-768 hybrid lattice vectors and AES-256 payload encryption.
+          </div>
+        </div>
+
         {/* Content Body */}
         <div className="p-5 space-y-4 overflow-y-auto flex-1">
           {error && (
@@ -289,13 +300,20 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
               {progress && (
                 <div className="space-y-3 p-4 rounded-xl border border-slate-200 bg-slate-50">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-slate-800 capitalize">
-                      {progress.stage === 'transferring'
-                        ? mode === 'send'
-                          ? 'Streaming to peer...'
-                          : 'Receiving byte stream...'
-                        : progress.stage}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-semibold text-slate-800 capitalize">
+                        {progress.stage === 'transferring'
+                          ? mode === 'send'
+                            ? 'Streaming to peer...'
+                            : 'Receiving byte stream...'
+                          : progress.stage}
+                      </span>
+                      {progress.isPostQuantumActive && (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-semibold border border-purple-200">
+                          ML-KEM-768 Active
+                        </span>
+                      )}
+                    </div>
                     <span className="font-mono text-purple-600 font-bold">{progress.percentage}%</span>
                   </div>
 

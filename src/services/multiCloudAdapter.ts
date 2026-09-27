@@ -750,7 +750,7 @@ export const downloadChunk = async (
     const chunkName = options.fileId.replace('demo-chunk-', '');
     const blob = await get<Blob>('matrix_demo_chunk_' + chunkName);
     if (blob) return await blob.arrayBuffer();
-    return new ArrayBuffer(0);
+    throw new Error(`Demo chunk "${chunkName}" not found in storage (simulated chunk loss).`);
   }
   const adapter = getStorageAdapter(account.provider || 'google');
   return await adapter.downloadChunk(account, options);

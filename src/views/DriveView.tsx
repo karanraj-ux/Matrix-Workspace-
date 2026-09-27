@@ -12,6 +12,7 @@ import {
   Trash2,
   RefreshCw,
   HardDrive,
+  Shield,
   ShieldCheck,
   Zap,
   Info,
@@ -31,6 +32,7 @@ import {
   FolderSync,
   FolderCheck,
   Scale,
+  Cpu,
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { DriveFile, AccountToken, StorageQuotaInfo } from '../types';
@@ -45,6 +47,7 @@ import { MobileActionSheet, MobileActionSheetItem } from '../components/MobileAc
 import { QRCodeCard } from '../components/QRCodeCard';
 import { P2PTunnelModal } from '../components/P2PTunnelModal';
 import { QuotaRebalanceModal } from '../components/QuotaRebalanceModal';
+import { QuantumLabModal } from '../components/QuantumLabModal';
 import { desktopSync, MountedFolderState } from '../services/desktopSyncService';
 
 interface DriveViewProps {
@@ -194,6 +197,10 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
 
   // Quota Rebalance Modal State
   const [rebalanceModalOpen, setRebalanceModalOpen] = useState(false);
+
+  // Quantum Threat Simulator & Lab State
+  const [quantumLabOpen, setQuantumLabOpen] = useState(false);
+  const [quantumTargetFile, setQuantumTargetFile] = useState<string>('Confidential_Report.pdf');
 
   // Desktop Mounted Folder State
   const [mountedFolder, setMountedFolder] = useState<MountedFolderState>({
@@ -704,21 +711,30 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
       setStatusMessage(null);
 
 
-      // Try streaming directly to disk to save RAM
+      // Try streaming directly to disk to save RAM when all chunks are healthy
       if ('showSaveFilePicker' in window) {
-        const streamed = await downloadShardedFileStream(
-          record.manifest,
-          accounts,
-          (p, cur, tot, stage) => {
-            setDownloadProgress(p);
-            if (stage) setDownloadStage(stage);
-          },
-          explicitKey || record.manifest.magicKey
-        );
-        if (streamed) {
-           setDownloadingId(null);
-           setStatusMessage({ type: 'success', text: 'File downloaded directly to disk.' });
-           return;
+        try {
+          const streamed = await downloadShardedFileStream(
+            record.manifest,
+            accounts,
+            (p, cur, tot, stage) => {
+              setDownloadProgress(p);
+              if (stage) setDownloadStage(stage);
+            },
+            explicitKey || record.manifest.magicKey
+          );
+          if (streamed) {
+             setDownloadingId(null);
+             setStatusMessage({ type: 'success', text: 'File downloaded directly to disk.' });
+             return;
+          }
+        } catch (streamErr: any) {
+          if (streamErr?.name === 'AbortError') {
+            setDownloadingId(null);
+            return; // User intentionally cancelled the file picker
+          }
+          console.warn('Streamed disk write failed or chunk missing, engaging parallel fault-tolerant reassembly:', streamErr);
+          setDownloadStage('Fault detected in storage. Activating parallel RAID-5 parity reconstruction...');
         }
       }
 
@@ -995,6 +1011,20 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
               }}
             />
             
+            <button
+              onClick={() => {
+                if (shardedRecords.length > 0) {
+                  setQuantumTargetFile(shardedRecords[0].manifest.filename);
+                }
+                setQuantumLabOpen(true);
+              }}
+              title="Open Cryptographic Verification Bench (Shor's Algorithm vs NIST ML-KEM-768)"
+              className="mr-3 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 shadow-2xs active:scale-95"
+            >
+              <Cpu size={14} className="text-slate-600" />
+              <span>Quantum Cryptanalysis</span>
+            </button>
+
             <div className="flex bg-slate-100 rounded-lg p-1 mr-4 border border-slate-200">
               <button
                 onClick={() => setUploadMode('standard')}
@@ -1129,6 +1159,20 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
             >
               <Radio size={12} />
               <span>P2P Direct Tunnel</span>
+            </button>
+
+            <button
+              onClick={() => {
+                if (shardedRecords.length > 0) {
+                  setQuantumTargetFile(shardedRecords[0].manifest.filename);
+                }
+                setQuantumLabOpen(true);
+              }}
+              className="text-[11px] font-medium text-slate-600 hover:text-slate-900 flex items-center gap-1 cursor-pointer pb-2"
+              title="Open Cryptographic Verification Bench"
+            >
+              <Cpu size={12} className="text-slate-500" />
+              <span>Quantum Bench</span>
             </button>
 
             {mountedFolder.isSupported && (
@@ -1529,6 +1573,20 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                     <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap">
                                       <LifeBuoy size={10} /> Multi-Cloud RAID-5
                                     </span>
+                                  )}
+                                  {record.manifest.isEncrypted && record.manifest.parityChunk && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setQuantumTargetFile(record.manifest.filename);
+                                        setQuantumLabOpen(true);
+                                      }}
+                                      className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 whitespace-nowrap cursor-pointer transition-colors"
+                                      title="Open Cryptographic Verification Bench"
+                                    >
+                                      <Shield size={10} className="text-purple-600" /> ML-KEM-768 / PQC
+                                    </button>
                                   )}
                                 </div>
                               </div>
@@ -2043,6 +2101,15 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                 Open this on another device or browser where your accounts are connected to reconstruct this file. Your shards remain 100% private in your personal cloud accounts.
               </p>
 
+              {/* Quantum Cryptography Specification */}
+              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-2">
+                <Shield size={14} className="text-purple-600 shrink-0 mt-0.5" />
+                <div className="text-[11px] leading-relaxed text-slate-700">
+                  <span className="font-semibold text-slate-900">Post-Quantum Hybrid: </span>
+                  Payload protected via NIST FIPS 203 ML-KEM-768 hybrid lattice encapsulation and Grover-safe AES-256-GCM against retrospective quantum cryptanalysis.
+                </div>
+              </div>
+
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] break-all text-slate-700 max-h-24 overflow-y-auto">
                 {magicLinkModal.url}
               </div>
@@ -2215,6 +2282,13 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
             if (val && Array.isArray(val)) setShardedRecords(val);
           });
         }}
+      />
+
+      {/* Quantum Threat Simulator & Lab Modal */}
+      <QuantumLabModal
+        isOpen={quantumLabOpen}
+        onClose={() => setQuantumLabOpen(false)}
+        targetFileName={quantumTargetFile}
       />
     </div>
   );

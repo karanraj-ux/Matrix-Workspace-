@@ -43,6 +43,11 @@ async function startServer() {
       }
 
       const contentType = driveRes.headers.get('content-type') || 'application/octet-stream';
+      if (contentType.toLowerCase().includes('text/html')) {
+        res.status(404).send('Google Drive returned an HTML error/warning page instead of chunk binary data (file likely deleted or not public).');
+        return;
+      }
+
       res.setHeader('Content-Type', contentType);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Cache-Control', 'public, max-age=86400');

@@ -101,10 +101,15 @@ export async function reconstructChunkWorker(
   parityChunk: ArrayBuffer,
   expectedSize: number
 ): Promise<ArrayBuffer> {
-  const transfers = [...survivingChunks, parityChunk];
+  // CRITICAL FIX: Transferring buffers detaches them in the caller thread (setting byteLength = 0).
+  // We must clone survivingChunks and parityChunk before transferring to the worker,
+  // so that chunkBuffers in downloadShardedFile remain intact and valid!
+  const survivingClones = survivingChunks.map(c => c.slice(0));
+  const parityClone = parityChunk.slice(0);
+  const transfers = [...survivingClones, parityClone];
   return callWorker<ArrayBuffer>(
     'RECONSTRUCT_CHUNK',
-    { survivingChunks, parityChunk, expectedSize },
+    { survivingChunks: survivingClones, parityChunk: parityClone, expectedSize },
     transfers
   );
 }
