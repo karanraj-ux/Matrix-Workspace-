@@ -59,7 +59,8 @@ export const PublicMagicDownloadModal: React.FC<PublicMagicDownloadModalProps> =
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      window.URL.revokeObjectURL(downloadUrl);
+      // Delay revocation by 60s for Android APK / mobile webview async download completion
+      setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 60000);
 
       setDownloadSuccess(true);
       if (onImportSuccess) onImportSuccess();

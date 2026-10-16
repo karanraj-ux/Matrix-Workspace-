@@ -1,6 +1,6 @@
 {
-  "name": "Matrix Workspace",
-  "description": "A client-side multi-cloud RAID-5 virtual storage filesystem and unified workspace across Google Drive, OneDrive, and Dropbox with AES-256-GCM zero-knowledge encryption.",
+  "name": "DriveShield",
+  "description": "A client-side zero-trust encrypted vault, storage cleaner, permission auditor, and multi-cloud companion for Google Drive with NIST FIPS 203 ML-KEM post-quantum cryptography.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

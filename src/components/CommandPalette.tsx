@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   Search,
-  Mail,
   HardDrive,
-  LayoutDashboard,
   Zap,
   Shield,
+  ShieldCheck,
+  ShieldAlert,
   Plus,
   Cloud,
   ArrowRight,
@@ -18,17 +18,17 @@ import {
   Scale,
   FolderSync,
   Cpu,
+  UploadCloud,
 } from 'lucide-react';
-import { GmailMessage, DriveFile } from '../types';
+import { DriveFile } from '../types';
+
+export type CommandNavView = 'drive' | 'vault' | 'doctor' | 'p2p' | 'settings';
 
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
-  emails: GmailMessage[];
   files: DriveFile[];
-  onNavigate: (view: 'dashboard' | 'mail' | 'drive' | 'settings' | 'automation') => void;
-  onOpenEmail: (email: GmailMessage) => void;
-  onOpenCompose: () => void;
+  onNavigate: (view: CommandNavView) => void;
   onTriggerUpload: () => void;
   onOpenConnect: (provider?: 'onedrive' | 'dropbox') => void;
 }
@@ -36,11 +36,8 @@ interface CommandPaletteProps {
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
   isOpen,
   onClose,
-  emails,
   files,
   onNavigate,
-  onOpenEmail,
-  onOpenCompose,
   onTriggerUpload,
   onOpenConnect,
 }) => {
@@ -77,47 +74,29 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   // Navigation Items
   const navigationItems = [
-    { id: 'nav-dash', type: 'nav', title: 'Go to Command Deck', subtitle: 'Workspace overview & metrics', icon: LayoutDashboard, action: () => onNavigate('dashboard') },
-    { id: 'nav-mail', type: 'nav', title: 'Go to Unified Mail', subtitle: 'Aggregated Gmail & Outlook inbox', icon: Mail, action: () => onNavigate('mail') },
-    { id: 'nav-drive', type: 'nav', title: 'Go to Virtual Drive', subtitle: 'RAID-5 sharded files & transfers', icon: HardDrive, action: () => onNavigate('drive') },
-    { id: 'nav-auto', type: 'nav', title: 'Go to Mail Automations', subtitle: 'Zero-server rules & daemon', icon: Zap, action: () => onNavigate('automation') },
-    { id: 'nav-sett', type: 'nav', title: 'Go to Security & Keys', subtitle: 'BYOK, multi-cloud tokens & privacy', icon: Shield, action: () => onNavigate('settings') },
+    { id: 'nav-drive', type: 'nav', title: 'Drive Files & Vault', subtitle: 'Browse Drive files and encrypted vault', icon: HardDrive, action: () => onNavigate('drive') },
+    { id: 'nav-p2p', type: 'nav', title: 'Direct P2P Beam', subtitle: 'Browser-to-browser encrypted transfers', icon: Radio, action: () => onNavigate('p2p') },
+    { id: 'nav-sett', type: 'nav', title: 'Security & Accounts', subtitle: 'BYOK, multi-cloud tokens & keys', icon: Shield, action: () => onNavigate('settings') },
   ].filter(item => !cleanQuery || item.title.toLowerCase().includes(cleanQuery) || item.subtitle.toLowerCase().includes(cleanQuery));
 
   // Quick Action Items
   const actionItems = [
-    { id: 'act-compose', type: 'action', title: 'Compose Message', subtitle: 'Send from Google or Outlook', icon: Plus, action: onOpenCompose },
-    { id: 'act-upload', type: 'action', title: 'Upload File to RAID-5 Vault', subtitle: 'Encrypt with AES-256 and stripe', icon: Lock, action: onTriggerUpload },
-    { id: 'act-quantum', type: 'action', title: 'Quantum Cryptanalysis Bench', subtitle: "Shor's algorithm vs NIST ML-KEM-768 lattice verification", icon: Cpu, action: () => onNavigate('drive') },
-    { id: 'act-p2p', type: 'action', title: 'WebRTC P2P Direct Tunnel', subtitle: 'Direct browser-to-browser encrypted streaming', icon: Radio, action: () => onNavigate('drive') },
-    { id: 'act-rebalance', type: 'action', title: 'Autonomous Quota Rebalancer', subtitle: 'Balance storage capacity across cloud providers', icon: Scale, action: () => onNavigate('drive') },
-    { id: 'act-mount', type: 'action', title: 'Mount Local Desktop Folder', subtitle: 'Native File System Access API integration', icon: FolderSync, action: () => onNavigate('drive') },
+    { id: 'act-upload', type: 'action', title: 'Upload New File', subtitle: 'Choose Standard or Zero-Trust Vault mode', icon: UploadCloud, action: onTriggerUpload },
+    { id: 'act-audit', type: 'action', title: 'Audit Public Links', subtitle: 'Check for files exposed to anyone on web', icon: ShieldAlert, action: () => onNavigate('doctor') },
+    { id: 'act-quantum', type: 'action', title: 'Quantum Cryptanalysis Bench', subtitle: "Shor's algorithm vs NIST ML-KEM-768 verification", icon: Cpu, action: () => onNavigate('vault') },
+    { id: 'act-p2p', type: 'action', title: 'WebRTC P2P Direct Tunnel', subtitle: 'Direct browser-to-browser encrypted streaming', icon: Radio, action: () => onNavigate('p2p') },
     { id: 'act-onedrive', type: 'action', title: 'Connect Microsoft OneDrive', subtitle: 'Pool 5 GB free storage', icon: Cloud, action: () => onOpenConnect('onedrive') },
     { id: 'act-dropbox', type: 'action', title: 'Connect Dropbox', subtitle: 'Pool 2 GB free storage', icon: Cloud, action: () => onOpenConnect('dropbox') },
   ].filter(item => !cleanQuery || item.title.toLowerCase().includes(cleanQuery) || item.subtitle.toLowerCase().includes(cleanQuery));
 
-  // Email Matches
-  const matchedEmails = cleanQuery
-    ? emails.filter(e => e.subject.toLowerCase().includes(cleanQuery) || e.from.toLowerCase().includes(cleanQuery) || e.snippet.toLowerCase().includes(cleanQuery)).slice(0, 4)
-    : [];
-
   // File Matches
   const matchedFiles = cleanQuery
-    ? files.filter(f => f.name.toLowerCase().includes(cleanQuery) || (f.accountEmail && f.accountEmail.toLowerCase().includes(cleanQuery))).slice(0, 4)
+    ? files.filter(f => f.name.toLowerCase().includes(cleanQuery) || (f.accountEmail && f.accountEmail.toLowerCase().includes(cleanQuery))).slice(0, 5)
     : [];
 
   const totalResults = [
     ...navigationItems.map(i => ({ ...i, category: 'Navigation' })),
     ...actionItems.map(i => ({ ...i, category: 'Actions' })),
-    ...matchedEmails.map(e => ({
-      id: `email-${e.id}`,
-      type: 'email',
-      title: e.subject,
-      subtitle: `${e.from} · ${e.accountEmail}`,
-      icon: Mail,
-      category: 'Emails',
-      action: () => { onOpenEmail(e); onNavigate('mail'); },
-    })),
     ...matchedFiles.map(f => ({
       id: `file-${f.id}`,
       type: 'file',

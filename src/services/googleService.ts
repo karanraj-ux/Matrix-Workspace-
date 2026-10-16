@@ -267,16 +267,15 @@ export const executeFederatedSearchStream = (
   query: string, 
   accounts: AccountToken[], 
   handleTokenExpiry: (id: string) => void,
-  onResultChunk: (type: 'mail' | 'drive', account: AccountToken, results: any[]) => void
+  onResultChunk: (type: 'drive', account: AccountToken, results: any[]) => void
 ) => {
   if (!query || query.trim() === '') return;
-  const q = encodeURIComponent(query);
   
   accounts.forEach(acc => {
     if (acc.isExpired) return;
     
     // Drive Search
-    fetch(`https://www.googleapis.com/drive/v3/files?pageSize=15&fields=files(id,name,mimeType,modifiedTime,webViewLink,webContentLink,iconLink)&q=trashed=false and name contains '${query.replace(/'/g, "\'")}'`, {
+    fetch(`https://www.googleapis.com/drive/v3/files?pageSize=25&fields=files(id,name,mimeType,modifiedTime,webViewLink,webContentLink,iconLink)&q=trashed=false and name contains '${query.replace(/'/g, "\\'")}'`, {
       headers: { Authorization: `Bearer ${acc.accessToken}` }
     }).then(res => {
       if (res.status === 401) { handleTokenExpiry(acc.id); throw new Error('Unauthorized'); }
@@ -287,42 +286,6 @@ export const executeFederatedSearchStream = (
       }));
       onResultChunk('drive', acc, files);
     }).catch(e => console.error('Drive search failed', e));
-
-    // Gmail Search
-    fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15&q=${q}`, {
-      headers: { Authorization: `Bearer ${acc.accessToken}` }
-    }).then(res => {
-      if (res.status === 401) { handleTokenExpiry(acc.id); throw new Error('Unauthorized'); }
-      return res.json();
-    }).then(async data => {
-      if (!data.messages) return;
-      const details = await Promise.all(
-        data.messages.map(async (msg: any) => {
-          const mRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`, {
-            headers: { Authorization: `Bearer ${acc.accessToken}` }
-          });
-          if (mRes.status === 401) return null;
-          const mData = await mRes.json();
-          const headers = mData.payload?.headers || [];
-          const getH = (n: string) => headers.find((h: any) => h.name.toLowerCase() === n.toLowerCase())?.value || '';
-          return {
-            id: mData.id,
-            threadId: mData.threadId,
-            snippet: mData.snippet,
-            subject: getH('Subject'),
-            from: getH('From'),
-            date: getH('Date'),
-            accountId: acc.id,
-            accountEmail: acc.email,
-            accountPhoto: acc.photoURL,
-            timestamp: new Date(getH('Date') || parseInt(mData.internalDate)).getTime()
-          };
-        })
-      );
-      onResultChunk('mail', acc, details.filter(Boolean));
-    }).catch(e => console.error('Gmail search failed', e));
-
-// No calendar search needed (Calendar completely removed)
   });
 };
 

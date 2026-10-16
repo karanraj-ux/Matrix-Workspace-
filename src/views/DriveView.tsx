@@ -14,6 +14,7 @@ import {
   HardDrive,
   Shield,
   ShieldCheck,
+  ShieldAlert,
   Zap,
   Info,
   X,
@@ -33,6 +34,7 @@ import {
   FolderCheck,
   Scale,
   Cpu,
+  QrCode,
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { DriveFile, AccountToken, StorageQuotaInfo } from '../types';
@@ -49,6 +51,16 @@ import { P2PTunnelModal } from '../components/P2PTunnelModal';
 import { QuotaRebalanceModal } from '../components/QuotaRebalanceModal';
 import { QuantumLabModal } from '../components/QuantumLabModal';
 import { desktopSync, MountedFolderState } from '../services/desktopSyncService';
+import {
+  runDriveDoctorScan,
+  revokePublicFilePermission,
+  moveFileToDriveTrash,
+  emptyGoogleDriveTrash,
+  DriveDoctorScanResult,
+  AuditedFile,
+} from '../services/driveDoctorService';
+
+export type DriveTabType = 'all' | 'frankenstein' | 'public' | 'giant';
 
 interface DriveViewProps {
   customClientId?: string;
@@ -57,7 +69,11 @@ interface DriveViewProps {
   isLoadingStreams: boolean;
   filteredFiles: DriveFile[];
   setTransferFile: (file: DriveFile) => void;
-  onAttachToEmail: (file: DriveFile) => void;
+  onAttachToEmail?: (file: DriveFile) => void;
+  initialTab?: 'all' | 'frankenstein' | 'vault' | 'public' | 'giant';
+  initialUploadMode?: 'vault' | 'standard';
+  onOpenDoctor?: () => void;
+  onOpenP2P?: () => void;
 }
 
 interface StoredManifestRecord {
@@ -70,20 +86,163 @@ interface StoredManifestRecord {
 export const DriveView: React.FC<DriveViewProps> = (props) => {
   const {
     customClientId,
-  accounts,
-  activeAccountIds,
-  isLoadingStreams,
-  filteredFiles,
-  onAttachToEmail,
-  setTransferFile
+    accounts,
+    activeAccountIds,
+    isLoadingStreams,
+    filteredFiles,
+    onAttachToEmail,
+    setTransferFile,
+    initialTab,
+    initialUploadMode,
+    onOpenDoctor,
+    onOpenP2P,
   } = props;
-  const [activeTab, setActiveTab] = useState<'frankenstein' | 'all'>('frankenstein');
+  const [activeTab, setActiveTab] = useState<DriveTabType>(
+    initialTab === 'vault' ? 'frankenstein' : (initialTab as DriveTabType) || 'all'
+  );
   const [shardedRecords, setShardedRecords] = useState<StoredManifestRecord[]>([]);
+
+  // Integrated Storage & Public Links Audit state
+  const [auditScanResult, setAuditScanResult] = useState<DriveDoctorScanResult | null>(null);
+  const [isAuditing, setIsAuditing] = useState(false);
+  const [auditRevokingId, setAuditRevokingId] = useState<string | null>(null);
+  const [isRevokingAllPublic, setIsRevokingAllPublic] = useState(false);
+  const [isEmptyingTrash, setIsEmptyingTrash] = useState(false);
 
   // Upload States
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadMode, setUploadMode] = useState<'vault' | 'standard'>('vault');
+  const [uploadMode, setUploadMode] = useState<'vault' | 'standard'>(
+    initialUploadMode || (initialTab === 'all' ? 'standard' : 'vault')
+  );
+
+  useEffect(() => {
+    if (initialTab) {
+      const mapped = initialTab === 'vault' ? 'frankenstein' : (initialTab as DriveTabType);
+      setActiveTab(mapped);
+      if (initialTab === 'all' && !initialUploadMode) {
+        setUploadMode('standard');
+      } else if ((initialTab === 'frankenstein' || initialTab === 'vault') && !initialUploadMode) {
+        setUploadMode('vault');
+      }
+    }
+  }, [initialTab, initialUploadMode]);
+
+  const performDriveAudit = async () => {
+    const activeGoogleAccounts = accounts.filter(
+      (a) => activeAccountIds.has(a.id) && !a.isExpired && (!a.provider || a.provider === 'google')
+    );
+    if (activeGoogleAccounts.length === 0) return;
+    setIsAuditing(true);
+    try {
+      const res = await runDriveDoctorScan(activeGoogleAccounts);
+      setAuditScanResult(res);
+    } catch (err) {
+      console.error('Audit scan error:', err);
+    } finally {
+      setIsAuditing(false);
+    }
+  };
+
+  useEffect(() => {
+    if ((activeTab === 'public' || activeTab === 'giant') && !auditScanResult && !isAuditing) {
+      performDriveAudit();
+    }
+  }, [activeTab]);
+
+  const handleRevokePublic = async (file: AuditedFile, permId: string) => {
+    const acc = accounts.find((a) => a.id === file.accountId);
+    if (!acc) return;
+    setAuditRevokingId(file.id);
+    const ok = await revokePublicFilePermission(acc.accessToken, file.id, permId);
+    if (ok) {
+      setAuditScanResult((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          publicFiles: prev.publicFiles.filter((f) => f.id !== file.id),
+        };
+      });
+      setStatusMessage({ type: 'success', text: `Revoked public access for "${file.name}".` });
+    } else {
+      setStatusMessage({ type: 'error', text: `Failed to revoke public access for "${file.name}".` });
+    }
+    setAuditRevokingId(null);
+  };
+
+  const handleRevokeAllPublic = async () => {
+    if (!auditScanResult || auditScanResult.publicFiles.length === 0) return;
+    if (
+      !confirm(
+        `Are you sure you want to revoke public access from all ${auditScanResult.publicFiles.length} files?`
+      )
+    )
+      return;
+    setIsRevokingAllPublic(true);
+    let revoked = 0;
+    for (const file of auditScanResult.publicFiles) {
+      const acc = accounts.find((a) => a.id === file.accountId);
+      if (!acc) continue;
+      for (const p of file.publicPermissions) {
+        const ok = await revokePublicFilePermission(acc.accessToken, file.id, p.permissionId);
+        if (ok) revoked++;
+      }
+    }
+    setIsRevokingAllPublic(false);
+    setStatusMessage({
+      type: 'success',
+      text: `Successfully revoked public permissions from ${revoked} links.`,
+    });
+    performDriveAudit();
+  };
+
+  const handleMoveGiantToTrash = async (file: AuditedFile) => {
+    const acc = accounts.find((a) => a.id === file.accountId);
+    if (!acc) return;
+    setAuditRevokingId(file.id);
+    const ok = await moveFileToDriveTrash(acc.accessToken, file.id);
+    if (ok) {
+      setAuditScanResult((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          giantFiles: prev.giantFiles.filter((f) => f.id !== file.id),
+        };
+      });
+      setStatusMessage({ type: 'success', text: `Moved "${file.name}" to Google Drive Trash.` });
+    } else {
+      setStatusMessage({ type: 'error', text: `Failed to trash "${file.name}".` });
+    }
+    setAuditRevokingId(null);
+  };
+
+  const handleEmptyTrash = async () => {
+    const activeGoogleAccounts = accounts.filter(
+      (a) => activeAccountIds.has(a.id) && !a.isExpired && (!a.provider || a.provider === 'google')
+    );
+    if (activeGoogleAccounts.length === 0) return;
+    if (
+      !confirm(
+        'This will permanently delete all files in the trash across your active Google Drive accounts to free quota. Proceed?'
+      )
+    )
+      return;
+    setIsEmptyingTrash(true);
+    let success = false;
+    for (const acc of activeGoogleAccounts) {
+      const ok = await emptyGoogleDriveTrash(acc.accessToken);
+      if (ok) success = true;
+    }
+    setIsEmptyingTrash(false);
+    if (success) {
+      setStatusMessage({
+        type: 'success',
+        text: 'Trash emptied permanently. Reclaimed storage will reflect shortly.',
+      });
+      refreshStorageQuotas();
+      performDriveAudit();
+    }
+  };
   const [uploadStage, setUploadStage] = useState('');
   const [uploadChunkStats, setUploadChunkStats] = useState<{ current: number; total: number }>({
     current: 0,
@@ -758,7 +917,8 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      window.URL.revokeObjectURL(downloadUrl);
+      // Delay revocation by 60s for Android APK / mobile webview async download completion
+      setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 60000);
 
       setStatusMessage({
         type: 'success',
@@ -931,69 +1091,32 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
         </div>
       )}
 
-      {/* TOP HEADER */}
-      <div className="bg-white border-b border-slate-200/90 px-6 py-5 shrink-0">
+      {/* DRIVE HEADER & HIGH-IMPACT ACTION BAR */}
+      <div className="bg-white border-b border-slate-200/90 px-4 md:px-6 py-4 shrink-0 shadow-2xs">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
+          
+          {/* Brand & Purpose */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center shrink-0">
-              <HardDrive className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-base font-bold text-slate-900 tracking-tight">
-                  Unified Multi-Cloud Virtual Drive
+                  DriveShield
                 </h1>
-                <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  RAID-5 Array
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 uppercase tracking-wider">
+                  Zero-Trust
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Presents multiple Google Drive, OneDrive, and Dropbox accounts as a single secure virtual hard disk with client-side encryption.
+                Google Drive with client-side quantum encryption and storage optimizer
               </p>
             </div>
           </div>
 
-          {/* Quick Action Bar */}
+          {/* 3 High-Impact Action Buttons */}
           <div className="flex items-center gap-2.5 flex-wrap">
-            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl">
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={enableEncryption}
-                  onChange={e => setEnableEncryption(e.target.checked)}
-                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5"
-                />
-                <span className="flex items-center gap-1 text-[11px] font-semibold text-slate-700">
-                  <Lock size={12} className="text-emerald-600" /> AES-256
-                </span>
-              </label>
-
-              <span className="text-slate-300">|</span>
-
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={enableParity}
-                  onChange={e => setEnableParity(e.target.checked)}
-                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
-                />
-                <span className="flex items-center gap-1 text-[11px] font-semibold text-slate-700">
-                  <LifeBuoy size={12} className="text-blue-600" /> RAID-5 Parity
-                </span>
-              </label>
-
-              <button
-                onClick={() => {
-                  getOrGenerateMasterKey().then(k => setCurrentMasterKey(k));
-                  setShowKeyModal(true);
-                }}
-                title="View Zero-Knowledge Master Key"
-                className="text-slate-400 hover:text-slate-800 ml-1 cursor-pointer"
-              >
-                <KeyRound size={13} />
-              </button>
-            </div>
-
             <input
               type="file"
               ref={fileInputRef}
@@ -1010,193 +1133,192 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                 }
               }}
             />
-            
-            <button
-              onClick={() => {
-                if (shardedRecords.length > 0) {
-                  setQuantumTargetFile(shardedRecords[0].manifest.filename);
-                }
-                setQuantumLabOpen(true);
-              }}
-              title="Open Cryptographic Verification Bench (Shor's Algorithm vs NIST ML-KEM-768)"
-              className="mr-3 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 shadow-2xs active:scale-95"
-            >
-              <Cpu size={14} className="text-slate-600" />
-              <span>Quantum Cryptanalysis</span>
-            </button>
 
-            <div className="flex bg-slate-100 rounded-lg p-1 mr-4 border border-slate-200">
+            {/* 1. Upload Button with Mode Toggle */}
+            <div className="inline-flex rounded-xl shadow-xs border border-slate-200 overflow-hidden">
               <button
-                onClick={() => setUploadMode('standard')}
-                title="Direct, fast single-cloud upload with native Google Drive link sharing"
-                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${uploadMode === 'standard' ? 'bg-white shadow-xs text-emerald-800 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
+                disabled={isUploading || activeAccounts.length === 0}
+                onClick={() => fileInputRef.current?.click()}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-white text-xs font-semibold transition-all disabled:opacity-50 cursor-pointer ${
+                  uploadMode === 'vault' ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
               >
-                <Cloud size={13} className={uploadMode === 'standard' ? 'text-emerald-600' : 'text-slate-400'} />
-                <span>Standard</span>
-              </button>
-              <button
-                onClick={() => setUploadMode('vault')}
-                title="Distributed Reed-Solomon RAID-5 sharded upload across multi-cloud accounts"
-                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${uploadMode === 'vault' ? 'bg-indigo-600 text-white shadow-xs font-bold' : 'text-slate-500 hover:text-slate-800'}`}
-              >
-                <ShieldCheck size={13} className={uploadMode === 'vault' ? 'text-white' : 'text-slate-400'} />
-                <span>Vault (RAID-5)</span>
-              </button>
-            </div>
-
-            <button
-              disabled={isUploading || activeAccounts.length === 0}
-              onClick={() => fileInputRef.current?.click()}
-              className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-xs transition-all disabled:opacity-50 cursor-pointer ${uploadMode === 'vault' ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
-            >
-              {isUploading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <UploadCloud className="w-3.5 h-3.5" />
-              )}
-              {isUploading
-                ? (uploadMode === 'vault' ? `Sharding... ${uploadProgress}%` : `Uploading... ${uploadProgress}%`)
-                : (uploadMode === 'vault' ? 'Upload to Vault (RAID-5)' : 'Upload File (Standard)')}
-            </button>
-          </div>
-        </div>
-
-        {/* Mode Explanation & Distinction Banner */}
-        <div className={`max-w-6xl mx-auto mt-4 px-4 py-3 rounded-xl border transition-all flex items-center justify-between gap-4 ${
-          uploadMode === 'standard'
-            ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
-            : 'bg-indigo-50/70 border-indigo-200 text-indigo-950'
-        }`}>
-          <div className="flex items-center gap-3 min-w-0">
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-              uploadMode === 'standard' ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-100 text-indigo-700'
-            }`}>
-              {uploadMode === 'standard' ? <Cloud size={18} /> : <ShieldCheck size={18} />}
-            </div>
-            <div className="min-w-0 text-xs">
-              <div className="font-bold flex items-center gap-2">
-                <span>{uploadMode === 'standard' ? 'Standard Upload Mode' : 'Vault (RAID-5) Mode'}</span>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                  uploadMode === 'standard' ? 'bg-emerald-200/70 text-emerald-800' : 'bg-indigo-200/70 text-indigo-800'
-                }`}>
-                  {uploadMode === 'standard' ? 'Universal Web Sharing' : 'Multi-Cloud Pooling & Parity'}
+                {isUploading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <UploadCloud className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {isUploading
+                    ? `Uploading... ${uploadProgress}%`
+                    : (uploadMode === 'vault' ? '+ Vault Upload' : '+ Standard Upload')}
                 </span>
-              </div>
-              <p className={`text-[11px] mt-0.5 ${uploadMode === 'standard' ? 'text-emerald-800' : 'text-indigo-800'}`}>
-                {uploadMode === 'standard'
-                  ? 'Fast direct single-account upload. Automatically creates an instant universal Google Drive public link anyone can open with zero setup.'
-                  : 'Pools multi-account storage using client-side AES-256 encryption and Reed-Solomon RAID-5 parity recovery for sensitive data.'}
-              </p>
-            </div>
-          </div>
-
-          <div className="hidden sm:flex items-center gap-2 shrink-0 text-[11px] font-medium">
-            {uploadMode === 'standard' ? (
-              <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold">
-                <Globe size={12} /> 1-Tap Public Link
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-indigo-700 font-semibold">
-                <Lock size={12} /> Zero-Knowledge Sharding
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Tab Toggle */}
-        <div className="max-w-6xl mx-auto flex items-center justify-between mt-5 border-b border-slate-100 pt-1">
-          <div className="flex items-center gap-6">
-            <button
-              onClick={() => setActiveTab('frankenstein')}
-              className={`pb-2.5 text-xs font-semibold transition-all relative ${
-                activeTab === 'frankenstein' ? 'text-indigo-700' : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <span className="flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
-                Personal Multi-Cloud Vault ({shardedRecords.length})
-              </span>
-              {activeTab === 'frankenstein' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600 rounded-full" />
-              )}
-            </button>
-
-            <button
-              onClick={() => setActiveTab('all')}
-              className={`pb-2.5 text-xs font-semibold transition-all relative ${
-                activeTab === 'all' ? 'text-emerald-700' : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <span className="flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5 text-emerald-600" />
-                Direct Share Drive ({filteredFiles.length})
-              </span>
-              {activeTab === 'all' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-full" />
-              )}
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {activeAccounts.length > 1 && (
-              <button
-                onClick={() => setRebalanceModalOpen(true)}
-                className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer pb-2"
-                title="Evaluate and balance quota usage across clouds"
-              >
-                <Scale size={12} />
-                <span>Rebalance Quotas</span>
               </button>
-            )}
 
+              <button
+                onClick={() => setUploadMode(prev => prev === 'vault' ? 'standard' : 'vault')}
+                className={`px-2.5 py-2 text-xs font-bold transition-all cursor-pointer border-l ${
+                  uploadMode === 'vault'
+                    ? 'bg-indigo-700 text-white hover:bg-indigo-800 border-indigo-500'
+                    : 'bg-emerald-700 text-white hover:bg-emerald-800 border-emerald-500'
+                }`}
+                title={`Click to switch between Standard & Vault upload modes`}
+              >
+                {uploadMode === 'vault' ? '🛡️ Vault' : '⚡ Direct'}
+              </button>
+            </div>
+
+            {/* 2. Direct P2P Beam */}
             <button
               onClick={() => {
                 setP2pFile(null);
                 setP2pModalOpen(true);
               }}
-              className="text-[11px] font-semibold text-purple-600 hover:text-purple-800 flex items-center gap-1 cursor-pointer pb-2"
-              title="Stream files peer-to-peer over WebRTC data channel"
+              className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer transition-all"
+              title="Stream files device-to-device via WebRTC without uploading to cloud"
             >
-              <Radio size={12} />
-              <span>P2P Direct Tunnel</span>
+              <Radio size={14} className="text-blue-600" />
+              <span>Direct Beam (P2P)</span>
             </button>
+          </div>
+        </div>
 
+        {/* 4-Segment Unified Workspace Switcher + Tools Tray */}
+        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-4 pt-3 border-t border-slate-100">
+          
+          {/* Segmented Pill Control */}
+          <div className="inline-flex bg-slate-100 p-1 rounded-xl border border-slate-200/80 flex-wrap gap-1">
+            {/* 1. All Drive Files */}
             <button
               onClick={() => {
-                if (shardedRecords.length > 0) {
-                  setQuantumTargetFile(shardedRecords[0].manifest.filename);
-                }
-                setQuantumLabOpen(true);
+                setActiveTab('all');
+                setUploadMode('standard');
               }}
-              className="text-[11px] font-medium text-slate-600 hover:text-slate-900 flex items-center gap-1 cursor-pointer pb-2"
-              title="Open Cryptographic Verification Bench"
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'all'
+                  ? 'bg-white text-slate-900 shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
             >
-              <Cpu size={12} className="text-slate-500" />
-              <span>Quantum Bench</span>
+              <Cloud size={14} className={activeTab === 'all' ? 'text-emerald-600' : 'text-slate-400'} />
+              <span>Drive Files ({filteredFiles.length})</span>
             </button>
+
+            {/* 2. Quantum Vault */}
+            <button
+              onClick={() => {
+                setActiveTab('frankenstein');
+                setUploadMode('vault');
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'frankenstein'
+                  ? 'bg-indigo-600 text-white shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ShieldCheck size={14} className={activeTab === 'frankenstein' ? 'text-white' : 'text-slate-400'} />
+              <span>Quantum Vault ({shardedRecords.length})</span>
+            </button>
+
+            {/* 3. Public Links Security */}
+            <button
+              onClick={() => {
+                setActiveTab('public');
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'public'
+                  ? 'bg-amber-500 text-white shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ShieldAlert size={14} className={activeTab === 'public' ? 'text-white' : 'text-amber-500'} />
+              <span>
+                Public Links {auditScanResult ? `(${auditScanResult.publicFiles.length})` : ''}
+              </span>
+            </button>
+
+            {/* 4. Large Files Quota Reclaim */}
+            <button
+              onClick={() => {
+                setActiveTab('giant');
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'giant'
+                  ? 'bg-slate-800 text-white shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <HardDrive size={14} className={activeTab === 'giant' ? 'text-white' : 'text-slate-500'} />
+              <span>
+                Large Files {auditScanResult ? `(${auditScanResult.giantFiles.length})` : ''}
+              </span>
+            </button>
+          </div>
+
+          {/* Expert Utilities Tray */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {activeTab === 'frankenstein' && (
+              <>
+                <button
+                  onClick={() => {
+                    if (shardedRecords.length > 0) {
+                      setQuantumTargetFile(shardedRecords[0].manifest.filename);
+                    }
+                    setQuantumLabOpen(true);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  title="Test Shor's Algorithm vs NIST ML-KEM-768 Lattice Vectors"
+                >
+                  <Cpu size={13} className="text-indigo-600" />
+                  <span>NIST ML-KEM-768 Lab</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    getOrGenerateMasterKey().then(k => setCurrentMasterKey(k));
+                    setShowKeyModal(true);
+                  }}
+                  className="p-1.5 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 cursor-pointer"
+                  title="View Zero-Knowledge Master Key"
+                >
+                  <KeyRound size={15} />
+                </button>
+              </>
+            )}
+
+            {activeAccounts.length > 1 && (
+              <button
+                onClick={() => setRebalanceModalOpen(true)}
+                className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                title="Balance storage across Google, OneDrive, and Dropbox"
+              >
+                <Scale size={12} />
+                <span>Rebalance</span>
+              </button>
+            )}
 
             {mountedFolder.isSupported && (
               <button
                 onClick={mountedFolder.isMounted ? handleUnmountLocalFolder : handleMountLocalFolder}
-                className={`text-[11px] font-semibold flex items-center gap-1 cursor-pointer pb-2 ${
+                className={`px-2.5 py-1 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer ${
                   mountedFolder.isMounted
-                    ? 'text-indigo-600 hover:text-indigo-800'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}
-                title="Mount local directory via File System Access API"
+                title="Mount local folder via File System Access API"
               >
-                <FolderSync size={12} />
-                <span>{mountedFolder.isMounted ? `Mounted: ${mountedFolder.folderName}` : 'Mount Desktop Folder'}</span>
+                <FolderSync size={13} />
+                <span>{mountedFolder.isMounted ? `Mounted: ${mountedFolder.folderName}` : 'Mount Desktop'}</span>
               </button>
             )}
 
             <button
               onClick={refreshStorageQuotas}
               disabled={isLoadingQuotas}
-              className="text-[11px] font-medium text-slate-500 hover:text-slate-900 flex items-center gap-1 cursor-pointer pb-2"
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+              title="Refresh Storage Quotas"
             >
-              <RefreshCw size={12} className={isLoadingQuotas ? 'animate-spin text-emerald-600' : ''} />
-              <span>Refresh Quotas</span>
+              <RefreshCw size={13} className={isLoadingQuotas ? 'animate-spin text-emerald-600' : ''} />
             </button>
           </div>
         </div>
@@ -1607,7 +1729,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                             </div>
                           </div>
 
-                          {/* Actions: 1 Primary Button + Clean Mobile 3-Dots Menu */}
+                          {/* Actions: Primary Download + Instant QR Share + 3-Dots Menu */}
                           <div className="flex items-center gap-2 shrink-0">
                             <button
                               disabled={isDownloadingThis}
@@ -1620,6 +1742,18 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                 <Download className="w-3.5 h-3.5" />
                               )}
                               {isDownloadingThis ? `Reassembling ${downloadProgress}%` : 'Download'}
+                            </button>
+
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleGenerateMagicLink(record);
+                              }}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold border border-indigo-200/80 transition-colors cursor-pointer shadow-2xs whitespace-nowrap"
+                              title="Instant QR Share: Multiple people can scan from phone camera to receive this file"
+                            >
+                              <QrCode className="w-3.5 h-3.5 text-indigo-600" />
+                              <span className="hidden sm:inline">QR Share</span>
                             </button>
 
                             {/* Three-dot context menu */}
@@ -1639,6 +1773,12 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                           label: 'Download & Decrypt',
                                           sublabel: 'Reassemble chunks in browser',
                                           onClick: () => handleReassembleDownload(record),
+                                        },
+                                        {
+                                          icon: <QrCode size={18} className="text-indigo-600" />,
+                                          label: 'Instant QR Share',
+                                          sublabel: 'Scan QR with camera to receive file',
+                                          onClick: () => handleGenerateMagicLink(record),
                                         },
                                         {
                                           icon: <Share2 size={18} className="text-indigo-600" />,
@@ -1684,6 +1824,17 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                     onClick={() => setActiveVaultMenuId(null)}
                                   />
                                   <div className="hidden sm:block absolute right-0 top-full mt-1 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 animate-in fade-in zoom-in-95 duration-100">
+                                    <button
+                                      onClick={() => {
+                                        setActiveVaultMenuId(null);
+                                        handleGenerateMagicLink(record);
+                                      }}
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left cursor-pointer"
+                                    >
+                                      <QrCode size={13} className="text-indigo-600 shrink-0" />
+                                      <span>Instant QR Code Share</span>
+                                    </button>
+
                                     <button
                                       onClick={() => {
                                         setActiveVaultMenuId(null);
@@ -1930,6 +2081,39 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                           Open <ExternalLink size={12} />
                         </a>
 
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              const acc = accounts.find(a => a.email === file.accountEmail);
+                              if (acc) {
+                                const { makeFilePublic } = await import('../services/googleService');
+                                await makeFilePublic(file.id, acc.accessToken);
+                              }
+                              setStandardShareModal({
+                                isOpen: true,
+                                url: file.webViewLink || 'https://drive.google.com/file/d/' + file.id + '/view',
+                                filename: file.name,
+                                accountEmail: file.accountEmail || '',
+                                title: 'Instant QR Share — Scan with Phone Camera'
+                              });
+                            } catch (err) {
+                              setStandardShareModal({
+                                isOpen: true,
+                                url: file.webViewLink || 'https://drive.google.com/file/d/' + file.id + '/view',
+                                filename: file.name,
+                                accountEmail: file.accountEmail || '',
+                                title: 'Instant QR Share — Scan with Phone Camera'
+                              });
+                            }
+                          }}
+                          className="text-xs text-indigo-700 hover:text-indigo-900 bg-indigo-50/80 hover:bg-indigo-100 font-semibold flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-indigo-200/80 transition-all cursor-pointer shadow-2xs"
+                          title="Instant QR Code: Multiple people can scan from camera to receive this file"
+                        >
+                          <QrCode size={13} className="text-indigo-600" />
+                          <span className="hidden sm:inline">QR Share</span>
+                        </button>
+
                         {/* Three-dot context menu */}
                         <div className="relative">
                           <button
@@ -1938,6 +2122,34 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                               if (typeof window !== 'undefined' && window.innerWidth < 640) {
                                 const acc = accounts.find(a => a.email === file.accountEmail);
                                 const sheetItems: MobileActionSheetItem[] = [
+                                  {
+                                    icon: <QrCode size={18} className="text-indigo-600" />,
+                                    label: 'Instant QR Share',
+                                    sublabel: 'Scan QR code to receive on phone',
+                                    onClick: async () => {
+                                      try {
+                                        if (acc) {
+                                          const { makeFilePublic } = await import('../services/googleService');
+                                          await makeFilePublic(file.id, acc.accessToken);
+                                        }
+                                        setStandardShareModal({
+                                          isOpen: true,
+                                          url: file.webViewLink || 'https://drive.google.com/file/d/' + file.id + '/view',
+                                          filename: file.name,
+                                          accountEmail: file.accountEmail || (acc ? acc.email : ''),
+                                          title: 'Instant QR Share — Scan with Phone Camera'
+                                        });
+                                      } catch (err) {
+                                        setStandardShareModal({
+                                          isOpen: true,
+                                          url: file.webViewLink || 'https://drive.google.com/file/d/' + file.id + '/view',
+                                          filename: file.name,
+                                          accountEmail: file.accountEmail || '',
+                                          title: 'Instant QR Share — Scan with Phone Camera'
+                                        });
+                                      }
+                                    },
+                                  },
                                   {
                                     icon: <ExternalLink size={18} className="text-emerald-600" />,
                                     label: 'Share Public Link',
@@ -2007,6 +2219,38 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                     setActiveFileMenuId(null);
                                     try {
                                       const acc = accounts.find(a => a.email === file.accountEmail);
+                                      if (acc) {
+                                        const { makeFilePublic } = await import('../services/googleService');
+                                        await makeFilePublic(file.id, acc.accessToken);
+                                      }
+                                      setStandardShareModal({
+                                        isOpen: true,
+                                        url: file.webViewLink || 'https://drive.google.com/file/d/' + file.id + '/view',
+                                        filename: file.name,
+                                        accountEmail: file.accountEmail || '',
+                                        title: 'Instant QR Share — Scan with Phone Camera'
+                                      });
+                                    } catch (err) {
+                                      setStandardShareModal({
+                                        isOpen: true,
+                                        url: file.webViewLink || 'https://drive.google.com/file/d/' + file.id + '/view',
+                                        filename: file.name,
+                                        accountEmail: file.accountEmail || '',
+                                        title: 'Instant QR Share — Scan with Phone Camera'
+                                      });
+                                    }
+                                  }}
+                                  className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors text-left cursor-pointer"
+                                >
+                                  <QrCode size={13} className="text-indigo-600" />
+                                  <span>Instant QR Share</span>
+                                </button>
+
+                                <button
+                                  onClick={async () => {
+                                    setActiveFileMenuId(null);
+                                    try {
+                                      const acc = accounts.find(a => a.email === file.accountEmail);
                                       if (!acc) return;
                                       const { makeFilePublic } = await import('../services/googleService');
                                       await makeFilePublic(file.id, acc.accessToken);
@@ -2063,6 +2307,259 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                   })
                 )}
               </div>
+            </div>
+          )}
+
+          {/* TAB 3: PUBLIC LINKS SECURITY AUDIT */}
+          {activeTab === 'public' && (
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 border border-amber-200">
+                    <ShieldAlert size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Public Links Security Auditor</h3>
+                    <p className="text-xs text-slate-500">
+                      Files accessible to anyone on the internet without logging in.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={performDriveAudit}
+                    disabled={isAuditing}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw size={13} className={isAuditing ? 'animate-spin text-amber-600' : ''} />
+                    <span>{isAuditing ? 'Scanning...' : 'Re-Scan Drive'}</span>
+                  </button>
+
+                  {auditScanResult && auditScanResult.publicFiles.length > 0 && (
+                    <button
+                      onClick={handleRevokeAllPublic}
+                      disabled={isRevokingAllPublic}
+                      className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-xs"
+                    >
+                      {isRevokingAllPublic ? <Loader2 size={13} className="animate-spin" /> : <Lock size={13} />}
+                      <span>Revoke All ({auditScanResult.publicFiles.length})</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {isAuditing ? (
+                <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-400">
+                  <Loader2 size={24} className="animate-spin text-amber-500" />
+                  <span className="text-xs font-medium">Scanning Drive files and permissions...</span>
+                </div>
+              ) : !auditScanResult || auditScanResult.publicFiles.length === 0 ? (
+                <div className="py-12 text-center space-y-2">
+                  <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto">
+                    <ShieldCheck size={24} />
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-900">Zero Exposed Public Links</h4>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    All scanned files are strictly private or restricted to authorized users.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900 flex items-center justify-between">
+                    <span>
+                      ⚠️ <strong>{auditScanResult.publicFiles.length} files</strong> have "Anyone with the link" permissions enabled. Anyone with these links can view or download them.
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {auditScanResult.publicFiles.map(file => (
+                      <div
+                        key={file.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-200 hover:border-amber-300 hover:bg-amber-50/20 transition-all"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                            <FileText size={16} />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-900 truncate max-w-xs">{file.name}</span>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 font-bold">Public</span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 flex items-center gap-2">
+                              <span>{file.accountEmail}</span>
+                              {file.size ? <span>• {(file.size / (1024 * 1024)).toFixed(1)} MB</span> : null}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {file.webViewLink && (
+                            <a
+                              href={file.webViewLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1.5 text-slate-500 hover:text-slate-700 rounded-lg hover:bg-slate-100 text-xs flex items-center gap-1"
+                              title="Open in Google Drive"
+                            >
+                              <ExternalLink size={13} />
+                              <span className="text-[11px]">Drive</span>
+                            </a>
+                          )}
+
+                          <button
+                            onClick={() => {
+                              setStandardShareModal({
+                                isOpen: true,
+                                url: file.webViewLink || 'https://drive.google.com/file/d/' + file.id + '/view',
+                                filename: file.name,
+                                accountEmail: file.accountEmail || '',
+                                title: 'Instant QR Share — Scan with Phone Camera'
+                              });
+                            }}
+                            className="p-1.5 text-indigo-700 bg-indigo-50/80 hover:bg-indigo-100 rounded-lg border border-indigo-200/70 text-xs flex items-center gap-1 cursor-pointer"
+                            title="Show QR Code for instant phone camera scanning"
+                          >
+                            <QrCode size={13} className="text-indigo-600" />
+                            <span className="text-[11px] font-semibold hidden sm:inline">QR Share</span>
+                          </button>
+                          <button
+                            onClick={() => file.publicPermissions[0] && handleRevokePublic(file, file.publicPermissions[0].permissionId)}
+                            disabled={auditRevokingId === file.id}
+                            className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                          >
+                            {auditRevokingId === file.id ? <Loader2 size={12} className="animate-spin" /> : <Lock size={12} />}
+                            <span>Make Private</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 4: LARGE FILES & QUOTA RECLAIM */}
+          {activeTab === 'giant' && (
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center shrink-0 border border-slate-200">
+                    <HardDrive size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Storage &amp; Giant Files Reclaim</h3>
+                    <p className="text-xs text-slate-500">
+                      Find largest space consumers (&gt; 50 MB) and wipe trash to instantly reclaim quota.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={performDriveAudit}
+                    disabled={isAuditing}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw size={13} className={isAuditing ? 'animate-spin text-slate-700' : ''} />
+                    <span>{isAuditing ? 'Scanning...' : 'Re-Scan'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleEmptyTrash}
+                    disabled={isEmptyingTrash}
+                    className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-xs"
+                    title="Permanently empty trash across all accounts"
+                  >
+                    {isEmptyingTrash ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                    <span>Empty Trash Permanently</span>
+                  </button>
+                </div>
+              </div>
+
+              {isAuditing ? (
+                <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-400">
+                  <Loader2 size={24} className="animate-spin text-slate-600" />
+                  <span className="text-xs font-medium">Analyzing file sizes across connected drives...</span>
+                </div>
+              ) : !auditScanResult || auditScanResult.giantFiles.length === 0 ? (
+                <div className="py-12 text-center space-y-2">
+                  <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center mx-auto">
+                    <CheckCircle2 size={24} />
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-900">No Giant Files Detected</h4>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    You don't have individual files over 50 MB hogging your storage quota.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 flex items-center justify-between">
+                    <span>
+                      📊 Found <strong>{auditScanResult.giantFiles.length} files</strong> over 50 MB totaling{' '}
+                      <strong>
+                        {(
+                          auditScanResult.giantFiles.reduce((acc, f) => acc + (f.size || 0), 0) /
+                          (1024 * 1024 * 1024)
+                        ).toFixed(2)}{' '}
+                        GB
+                      </strong>
+                      .
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {auditScanResult.giantFiles.map(file => (
+                      <div
+                        key={file.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50/50 transition-all"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center shrink-0">
+                            <FileText size={16} />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-900 truncate max-w-xs">{file.name}</span>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-200 text-slate-800 font-bold font-mono">
+                                {file.size ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : ''}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-400">
+                              <span>{file.accountEmail}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {file.webViewLink && (
+                            <a
+                              href={file.webViewLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1.5 text-slate-500 hover:text-slate-700 rounded-lg hover:bg-slate-100 text-xs flex items-center gap-1"
+                              title="Open in Google Drive"
+                            >
+                              <ExternalLink size={13} />
+                              <span className="text-[11px]">Drive</span>
+                            </a>
+                          )}
+                          <button
+                            onClick={() => handleMoveGiantToTrash(file)}
+                            disabled={auditRevokingId === file.id}
+                            className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors"
+                          >
+                            {auditRevokingId === file.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                            <span>Move to Trash</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

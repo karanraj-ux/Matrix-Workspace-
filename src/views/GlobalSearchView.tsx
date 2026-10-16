@@ -8,7 +8,7 @@ interface GlobalSearchViewProps {
   query: string;
   accounts: AccountToken[];
   onClose: () => void;
-  openEmail: (e: GmailMessage) => void;
+  openEmail?: (e: GmailMessage) => void;
   onClearQuery: () => void;
 }
 

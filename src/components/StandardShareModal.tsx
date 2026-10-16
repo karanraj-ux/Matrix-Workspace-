@@ -94,19 +94,19 @@ export const StandardShareModal: React.FC<StandardShareModalProps> = ({
             </div>
           </div>
 
-          {/* QR Code Quick Scan for Mobile */}
+          {/* QR Code Quick Scan for Mobile / Multiple People */}
           <QRCodeCard
             url={url}
-            title="Scan with Phone to Open"
-            subtitle="Instantly open this Google Drive file on your smartphone camera"
+            title="Scan with Camera to Receive File"
+            subtitle="Multiple people can scan this QR code simultaneously on their phones to get the file instantly"
           />
 
           <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-xl p-3 text-xs text-emerald-900 space-y-1">
             <div className="font-semibold flex items-center gap-1.5 text-emerald-950">
-              <Globe size={13} className="text-emerald-600" /> Instant Zero-Setup Sharing
+              <Globe size={13} className="text-emerald-600" /> Instant Multi-Device Sharing
             </div>
             <p className="text-[11px] leading-relaxed text-emerald-800">
-              Anyone with this link or QR code can view or download this file directly in their web browser via Google Drive. No Matrix account, zero-knowledge keys, or authentication required for the recipient.
+              Anyone who scans this QR code or opens the link gets the file directly without typing URLs, logging in, or needing special permissions. Ideal for sharing with groups, teams, or passing files from desktop to phone in seconds.
             </p>
           </div>
 

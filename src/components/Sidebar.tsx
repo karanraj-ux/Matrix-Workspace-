@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   Layers,
-  Mail,
   FileText,
   AlertCircle,
   Plus,
@@ -10,16 +9,22 @@ import {
   LayoutDashboard,
   Zap,
   Shield,
+  ShieldCheck,
+  ShieldAlert,
   HardDrive,
   Check,
   Cloud,
+  UploadCloud,
+  Radio,
 } from 'lucide-react';
 import { AccountToken } from '../types';
 import { UnifiedStoragePoolBar } from './UnifiedStoragePoolBar';
 
+export type ViewType = 'drive' | 'vault' | 'doctor' | 'p2p' | 'settings';
+
 interface SidebarProps {
-  currentView: 'dashboard' | 'mail' | 'drive' | 'settings' | 'automation';
-  setCurrentView: (view: 'dashboard' | 'mail' | 'drive' | 'settings' | 'automation') => void;
+  currentView: ViewType;
+  setCurrentView: (view: ViewType) => void;
   accounts: AccountToken[];
   activeAccountIds: Set<string>;
   toggleAccountActive: (id: string) => void;
@@ -29,7 +34,7 @@ interface SidebarProps {
   handleLogoutAll: () => void;
   isMobileMenuOpen?: boolean;
   closeMobileMenu?: () => void;
-  onCompose: () => void;
+  onNewUpload?: () => void;
   onAddMultiCloudAccount?: (provider: 'onedrive' | 'dropbox') => void;
 }
 
@@ -44,7 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   handleLogoutAll,
   isMobileMenuOpen = false,
   closeMobileMenu = () => {},
-  onCompose,
+  onNewUpload = () => {},
   onAddMultiCloudAccount,
 }) => {
   const getProviderBadge = (provider?: string) => {
@@ -54,7 +59,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       case 'dropbox':
         return <span className="text-[9px] font-bold px-1 rounded bg-sky-100 text-sky-700">Dropbox</span>;
       default:
-        return <span className="text-[9px] font-bold px-1 rounded bg-amber-100 text-amber-700">Google</span>;
+        return <span className="text-[9px] font-bold px-1 rounded bg-emerald-100 text-emerald-700">Google</span>;
     }
   };
 
@@ -73,113 +78,84 @@ export const Sidebar: React.FC<SidebarProps> = ({
           isMobileMenuOpen ? 'fixed inset-y-0 left-0 z-50 flex shadow-2xl' : 'hidden'
         } md:relative md:flex w-64 bg-white text-slate-800 border-r border-slate-200/90 flex-col shrink-0 select-none`}
       >
-        {/* Workspace Brand Header */}
+        {/* Brand Header */}
         <div className="h-16 flex items-center justify-between px-5 border-b border-slate-100 shrink-0">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold shadow-xs">
-              <Layers className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 to-blue-600 text-white flex items-center justify-center font-bold shadow-xs">
+              <ShieldCheck className="w-4 h-4" />
             </div>
             <div>
-              <div className="font-bold text-sm tracking-tight text-slate-900">MATRIX</div>
-              <div className="text-[10px] text-slate-400 font-medium">Multi-Cloud RAID-5</div>
+              <div className="font-bold text-sm tracking-tight text-slate-900">DriveShield</div>
+              <div className="text-[10px] text-slate-400 font-medium">Zero-Trust &amp; Audit Suite</div>
             </div>
           </div>
-          <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-100">
-            v3.0
+          <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+            PQC
           </span>
         </div>
 
         <div className="flex-1 overflow-y-auto py-5 flex flex-col gap-6 px-3">
-          {/* Quick Action Compose */}
+          {/* Quick Action Upload */}
           <div>
             <button
-              onClick={onCompose}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm shadow-blue-500/10 transition-all cursor-pointer"
+              onClick={onNewUpload}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm shadow-indigo-500/10 transition-all cursor-pointer"
             >
-              <Plus className="w-4 h-4" />
-              <span>Compose Email</span>
+              <UploadCloud className="w-4 h-4" />
+              <span>Upload / Secure File</span>
             </button>
           </div>
 
           {/* Core Navigation Items */}
           <div className="space-y-1">
             <div className="px-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-              Modules
+              Workspaces
             </div>
 
-            <button
-              onClick={() => setCurrentView('dashboard')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-                currentView === 'dashboard'
-                  ? 'bg-slate-100 text-slate-900 font-semibold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              <LayoutDashboard
-                className={`w-4 h-4 ${
-                  currentView === 'dashboard' ? 'text-blue-600' : 'text-slate-400'
-                }`}
-              />
-              <span>Dashboard</span>
-            </button>
-
+            {/* 1. Unified Drive & Vault Hub */}
             <button
               onClick={() => setCurrentView('drive')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-                currentView === 'drive'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                currentView === 'drive' || currentView === 'vault'
                   ? 'bg-slate-100 text-slate-900 font-semibold shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
               }`}
             >
               <HardDrive
                 className={`w-4 h-4 ${
-                  currentView === 'drive' ? 'text-emerald-600' : 'text-slate-400'
+                  currentView === 'drive' || currentView === 'vault' ? 'text-indigo-600' : 'text-slate-400'
                 }`}
               />
-              <span className="flex-1 text-left">Virtual Drive</span>
-              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                RAID-5
+              <span className="flex-1 text-left">Drive Files &amp; Vault</span>
+              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                PQC + Direct
               </span>
             </button>
 
+            {/* 2. Direct P2P Beam */}
             <button
-              onClick={() => setCurrentView('automation')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-                currentView === 'automation'
+              onClick={() => setCurrentView('p2p')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                currentView === 'p2p'
                   ? 'bg-slate-100 text-slate-900 font-semibold shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
               }`}
             >
-              <Zap
+              <Radio
                 className={`w-4 h-4 ${
-                  currentView === 'automation' ? 'text-amber-500' : 'text-slate-400'
+                  currentView === 'p2p' ? 'text-blue-500' : 'text-slate-400'
                 }`}
               />
-              <span className="flex-1 text-left">Mail Automation</span>
-              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 border border-amber-200">
-                Auto
+              <span className="flex-1 text-left">Direct P2P Beam</span>
+              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                WebRTC
               </span>
             </button>
 
-            <button
-              onClick={() => setCurrentView('mail')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-                currentView === 'mail'
-                  ? 'bg-slate-100 text-slate-900 font-semibold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              <Mail
-                className={`w-4 h-4 ${
-                  currentView === 'mail' ? 'text-blue-500' : 'text-slate-400'
-                }`}
-              />
-              <span>Unified Mail</span>
-            </button>
-
+            {/* 3. Security & Accounts */}
             <button
               onClick={() => setCurrentView('settings')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
                 currentView === 'settings'
                   ? 'bg-slate-100 text-slate-900 font-semibold shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
@@ -190,7 +166,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentView === 'settings' ? 'text-slate-800' : 'text-slate-400'
                 }`}
               />
-              <span>Security & Accounts</span>
+              <span className="flex-1 text-left">Security &amp; Accounts</span>
             </button>
           </div>
 
