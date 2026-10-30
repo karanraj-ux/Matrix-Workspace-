@@ -35,10 +35,11 @@ import {
   Scale,
   Cpu,
   QrCode,
+  Link2,
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { DriveFile, AccountToken, StorageQuotaInfo } from '../types';
-import { ShardManifest, uploadShardedFile, saveManifestToDrive, downloadShardedFile, downloadShardedFileStream, deleteShardedFile, verifyShardIntegrity, createMagicShareLink, decodeMagicShareLink, makeManifestChunksPublic, revokeManifestChunksPublic } from '../services/shardingService';
+import { ShardManifest, uploadShardedFile, saveManifestToDrive, downloadShardedFile, deleteShardedFile, verifyShardIntegrity, createMagicShareLink, decodeMagicShareLink, makeManifestChunksPublic, revokeManifestChunksPublic } from '../services/shardingService';
 import { getOrGenerateMasterKey, MASTER_KEY_STORAGE_ID } from '../services/cryptoWorkerClient';
 import { fetchAccountQuota } from '../services/multiCloudAdapter';
 import { StandardUploadPickerModal } from '../components/StandardUploadPickerModal';
@@ -870,36 +871,8 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
       setStatusMessage(null);
 
 
-      // Try streaming directly to disk to save RAM when all chunks are healthy
-      if ('showSaveFilePicker' in window) {
-        try {
-          const streamed = await downloadShardedFileStream(
-            record.manifest,
-            accounts,
-            (p, cur, tot, stage) => {
-              setDownloadProgress(p);
-              if (stage) setDownloadStage(stage);
-            },
-            explicitKey || record.manifest.magicKey
-          );
-          if (streamed) {
-             setDownloadingId(null);
-             setStatusMessage({ type: 'success', text: 'File downloaded directly to disk.' });
-             return;
-          }
-        } catch (streamErr: any) {
-          if (streamErr?.name === 'AbortError') {
-            setDownloadingId(null);
-            return; // User intentionally cancelled the file picker
-          }
-          console.warn('Streamed disk write failed or chunk missing, engaging parallel fault-tolerant reassembly:', streamErr);
-          setDownloadStage('Fault detected in storage. Activating parallel RAID-5 parity reconstruction...');
-        }
-      }
-
-      // Fallback for browsers without Stream API
+      // Reliable fault-tolerant multi-cloud download with automatic on-the-fly RAID-5 parity reconstruction
       const blob = await downloadShardedFile(
-
         record.manifest,
         accounts,
         (p, cur, tot, stage) => {
@@ -1750,10 +1723,10 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                                 handleGenerateMagicLink(record);
                               }}
                               className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold border border-indigo-200/80 transition-colors cursor-pointer shadow-2xs whitespace-nowrap"
-                              title="Instant QR Share: Multiple people can scan from phone camera to receive this file"
+                              title="One-Click Magic Link: Send and forget via chat or scan QR with phone camera"
                             >
-                              <QrCode className="w-3.5 h-3.5 text-indigo-600" />
-                              <span className="hidden sm:inline">QR Share</span>
+                              <Link2 className="w-3.5 h-3.5 text-indigo-600" />
+                              <span className="hidden sm:inline">Magic Link</span>
                             </button>
 
                             {/* Three-dot context menu */}
@@ -2581,8 +2554,8 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                     <Share2 size={16} />
                   </div>
                   <div>
-                    <h3 className="text-sm font-bold text-slate-900">Personal Device-Sync Link</h3>
-                    <p className="text-xs text-slate-400">Cross-Device Vault Reconstitution</p>
+                    <h3 className="text-sm font-bold text-slate-900">One-Click Sovereign Magic Link</h3>
+                    <p className="text-xs text-slate-400">Send &amp; Forget • Download anywhere without sender online</p>
                   </div>
                 </div>
                 <button
@@ -2594,16 +2567,16 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
               </div>
 
               <p className="text-xs text-slate-600 leading-relaxed">
-                This self-contained link encodes the encrypted chunk blueprint and AES-256 decryption key in the URL hash.
-                Open this on another device or browser where your accounts are connected to reconstruct this file. Your shards remain 100% private in your personal cloud accounts.
+                This self-contained link encodes the decentralized chunk blueprint and AES-256 decryption key in the URL hash.
+                Recipients can open and download this file on any phone or laptop immediately without needing an account.
               </p>
 
               {/* Quantum Cryptography Specification */}
               <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-2">
                 <Shield size={14} className="text-purple-600 shrink-0 mt-0.5" />
                 <div className="text-[11px] leading-relaxed text-slate-700">
-                  <span className="font-semibold text-slate-900">Post-Quantum Hybrid: </span>
-                  Payload protected via NIST FIPS 203 ML-KEM-768 hybrid lattice encapsulation and Grover-safe AES-256-GCM against retrospective quantum cryptanalysis.
+                  <span className="font-semibold text-slate-900">Post-Quantum Lattice Shielded: </span>
+                  Payload protected via NIST FIPS 203 ML-KEM-768 hybrid lattice encapsulation and Grover-safe AES-256-GCM.
                 </div>
               </div>
 
@@ -2618,7 +2591,23 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                 subtitle="Open this self-contained decentralized link instantly with any phone camera"
               />
 
-              <div className="flex justify-end gap-2 pt-1">
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+                  <button
+                    onClick={() => {
+                      navigator.share({
+                        title: magicLinkModal.filename,
+                        text: `Here is the one-click secure download for "${magicLinkModal.filename}":`,
+                        url: magicLinkModal.url,
+                      }).catch(() => {});
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Share2 size={13} />
+                    <span>Share via Chat / Apps</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(magicLinkModal.url);
@@ -2628,7 +2617,7 @@ export const DriveView: React.FC<DriveViewProps> = (props) => {
                   className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs"
                 >
                   {copiedMagicLink ? <Check size={13} /> : <Copy size={13} />}
-                  <span>{copiedMagicLink ? 'Copied to Clipboard!' : 'Copy Device-Sync Link'}</span>
+                  <span>{copiedMagicLink ? 'Copied to Clipboard!' : 'Copy Magic Link'}</span>
                 </button>
               </div>
             </motion.div>

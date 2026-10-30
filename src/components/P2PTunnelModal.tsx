@@ -1,21 +1,29 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   X,
-  Radio,
   Send,
   Download,
   Copy,
   Check,
+  Zap,
+  Shield,
   CheckCircle2,
   AlertCircle,
-  Loader2,
-  Zap,
-  ArrowRight,
-  Shield,
   HardDrive,
-  Share2,
+  Loader2,
+  KeyRound,
+  Link2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
-import { WebRtcP2PTunnel, P2PTransferProgress } from '../services/webRtcService';
+import {
+  WebRtcP2PTunnel,
+  P2PTransferProgress,
+  createP2PRoomWithCode,
+  fetchOfferByCode,
+  submitAnswerByCode,
+  pollForAnswer,
+} from '../services/webRtcService';
 
 interface P2PTunnelModalProps {
   isOpen: boolean;
@@ -35,15 +43,21 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
   const [mode, setMode] = useState<'send' | 'receive'>(preselectedFile ? 'send' : 'receive');
   const [tunnel, setTunnel] = useState<WebRtcP2PTunnel | null>(null);
 
-  // Sender state
+  // 6-Digit Pairing State
+  const [pairingCode, setPairingCode] = useState<string>('');
+  const [receiverCodeInput, setReceiverCodeInput] = useState<string>('');
+  const [isGeneratingCode, setIsGeneratingCode] = useState<boolean>(false);
+  const [isConnectingReceiver, setIsConnectingReceiver] = useState<boolean>(false);
+  const [hasCopiedCode, setHasCopiedCode] = useState<boolean>(false);
+  const [hasCopiedBeamLink, setHasCopiedBeamLink] = useState<boolean>(false);
+
+  // Manual fallback state
+  const [showManualSdp, setShowManualSdp] = useState<boolean>(false);
   const [offerCode, setOfferCode] = useState<string>('');
   const [answerInput, setAnswerInput] = useState<string>('');
-  const [isWaitingAnswer, setIsWaitingAnswer] = useState<boolean>(false);
-  const [hasCopiedOffer, setHasCopiedOffer] = useState<boolean>(false);
-
-  // Receiver state
   const [offerInput, setOfferInput] = useState<string>('');
   const [generatedAnswer, setGeneratedAnswer] = useState<string>('');
+  const [hasCopiedOffer, setHasCopiedOffer] = useState<boolean>(false);
   const [hasCopiedAnswer, setHasCopiedAnswer] = useState<boolean>(false);
 
   // File to send
@@ -58,16 +72,25 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pollAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!isOpen) {
+      if (pollAbortControllerRef.current) {
+        pollAbortControllerRef.current.abort();
+        pollAbortControllerRef.current = null;
+      }
       if (tunnel) tunnel.close();
       setTunnel(null);
+      setPairingCode('');
+      setReceiverCodeInput('');
       setOfferCode('');
       setAnswerInput('');
       setOfferInput('');
       setGeneratedAnswer('');
       setIsConnected(false);
+      setIsGeneratingCode(false);
+      setIsConnectingReceiver(false);
       setProgress(null);
       setReceivedFile(null);
       setError(null);
@@ -76,34 +99,87 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
 
   if (!isOpen) return null;
 
-  // SENDER: Create Offer
+  // SENDER: Start 6-Digit Tunnel
   const handleStartSender = async () => {
     try {
       setError(null);
+      setIsGeneratingCode(true);
+
       const newTunnel = new WebRtcP2PTunnel();
       setTunnel(newTunnel);
-      setIsWaitingAnswer(true);
 
       const { offerString, onConnected } = await newTunnel.createOffer();
       setOfferCode(offerString);
 
       onConnected.then(() => {
         setIsConnected(true);
-        setIsWaitingAnswer(false);
+        setIsGeneratingCode(false);
       });
+
+      try {
+        const code = await createP2PRoomWithCode(offerString);
+        setPairingCode(code);
+        setIsGeneratingCode(false);
+
+        pollAbortControllerRef.current = new AbortController();
+        pollForAnswer(
+          code,
+          async (answer) => {
+            try {
+              await newTunnel.acceptAnswer(answer);
+            } catch (err: any) {
+              console.warn('Auto answer apply failed:', err);
+            }
+          },
+          pollAbortControllerRef.current.signal
+        ).catch(() => {});
+      } catch (signalingErr: any) {
+        console.warn('Signaling room failed, falling back to manual SDP:', signalingErr);
+        setIsGeneratingCode(false);
+        setShowManualSdp(true);
+      }
     } catch (e: any) {
       setError(`Failed to create P2P offer: ${e.message}`);
-      setIsWaitingAnswer(false);
+      setIsGeneratingCode(false);
     }
   };
 
-  // SENDER: Apply Receiver's Answer
-  const handleApplyAnswer = async () => {
-    if (!tunnel || !answerInput.trim()) return;
+  // RECEIVER: Connect via 6-Digit Code
+  const handleConnectByCode = async () => {
+    const cleanCode = receiverCodeInput.replace(/\D/g, '');
+    if (cleanCode.length !== 6) {
+      setError('Please enter a valid 6-digit code.');
+      return;
+    }
+
     try {
-      await tunnel.acceptAnswer(answerInput.trim());
-    } catch (e: any) {
-      setError(`Failed to connect with answer: ${e.message}`);
+      setError(null);
+      setIsConnectingReceiver(true);
+
+      const offerString = await fetchOfferByCode(cleanCode);
+
+      const newTunnel = new WebRtcP2PTunnel();
+      setTunnel(newTunnel);
+
+      const { answerString, onConnected } = await newTunnel.handleOfferAndCreateAnswer(offerString);
+      setGeneratedAnswer(answerString);
+
+      await submitAnswerByCode(cleanCode, answerString);
+
+      onConnected.then(() => {
+        setIsConnected(true);
+        setIsConnectingReceiver(false);
+        newTunnel.receiveFile(
+          (p) => setProgress(p),
+          (file) => {
+            setReceivedFile(file);
+            if (onFileReceived) onFileReceived(file);
+          }
+        );
+      });
+    } catch (err: any) {
+      setError(err.message || 'Could not connect with 6-digit code. Please verify the code.');
+      setIsConnectingReceiver(false);
     }
   };
 
@@ -123,8 +199,17 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
     }
   };
 
-  // RECEIVER: Generate Answer
-  const handleProcessOffer = async () => {
+  // Manual Fallback Handlers
+  const handleApplyManualAnswer = async () => {
+    if (!tunnel || !answerInput.trim()) return;
+    try {
+      await tunnel.acceptAnswer(answerInput.trim());
+    } catch (e: any) {
+      setError(`Failed to connect with answer: ${e.message}`);
+    }
+  };
+
+  const handleProcessManualOffer = async () => {
     if (!offerInput.trim()) return;
     try {
       setError(null);
@@ -138,7 +223,6 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
 
       onConnected.then(() => {
         setIsConnected(true);
-        // Start listening for incoming file
         newTunnel.receiveFile(
           (p) => setProgress(p),
           (file) => {
@@ -152,35 +236,26 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
     }
   };
 
-  const copyToClipboard = (text: string, isOffer: boolean) => {
-    navigator.clipboard.writeText(text);
-    if (isOffer) {
-      setHasCopiedOffer(true);
-      setTimeout(() => setHasCopiedOffer(false), 2000);
-    } else {
-      setHasCopiedAnswer(true);
-      setTimeout(() => setHasCopiedAnswer(false), 2000);
-    }
+  const formatSpeed = (speedBps: number) => {
+    if (speedBps === 0) return '0 B/s';
+    const mbps = speedBps / (1024 * 1024);
+    return `${mbps.toFixed(1)} MB/s`;
   };
 
-  const formatSpeed = (bps: number) => {
-    if (bps > 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(2)} MB/s`;
-    if (bps > 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-    return `${Math.round(bps)} B/s`;
-  };
+  const beamShareUrl = pairingCode ? `${window.location.origin}${window.location.pathname}#beam=${pairingCode}` : '';
 
   return (
-    <div className="fixed inset-0 z-[160] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center">
-              <Radio size={16} />
+            <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <KeyRound size={17} />
             </div>
             <div>
-              <h3 className="font-bold text-sm text-slate-900">Direct WebRTC P2P Tunnel</h3>
-              <p className="text-[11px] text-slate-400">Zero-cloud browser-to-browser encrypted streaming</p>
+              <h3 className="font-bold text-sm text-slate-900">Direct WebRTC P2P Beam</h3>
+              <p className="text-[11px] text-slate-400">Zero-cloud direct streaming with 6-digit pairing</p>
             </div>
           </div>
           <button
@@ -201,7 +276,7 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
               }}
               className={`py-2 text-xs font-semibold rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-all ${
                 mode === 'send'
-                  ? 'bg-white text-purple-700 shadow-2xs border border-slate-200'
+                  ? 'bg-white text-indigo-700 shadow-2xs border border-slate-200'
                   : 'text-slate-500 hover:text-slate-700'
               }`}
             >
@@ -215,7 +290,7 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
               }}
               className={`py-2 text-xs font-semibold rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-all ${
                 mode === 'receive'
-                  ? 'bg-white text-purple-700 shadow-2xs border border-slate-200'
+                  ? 'bg-white text-indigo-700 shadow-2xs border border-slate-200'
                   : 'text-slate-500 hover:text-slate-700'
               }`}
             >
@@ -224,17 +299,6 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
             </button>
           </div>
         )}
-
-        {/* Quantum-Resistant Cryptography Specification */}
-        <div className="mx-5 mt-4 p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-2.5">
-          <div className="p-1 rounded-md bg-slate-200 text-slate-700 shrink-0 mt-0.5">
-            <Shield size={13} />
-          </div>
-          <div className="text-[11px] leading-relaxed text-slate-600">
-            <span className="font-semibold text-slate-900">Post-Quantum Cryptography: </span>
-            P2P session key exchange encapsulated via NIST FIPS 203 ML-KEM-768 hybrid lattice vectors and AES-256 payload encryption.
-          </div>
-        </div>
 
         {/* Content Body */}
         <div className="p-5 space-y-4 overflow-y-auto flex-1">
@@ -254,7 +318,7 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
                   <span>Encrypted P2P DataChannel Connected</span>
                 </div>
                 <span className="text-[10px] font-mono text-emerald-600 bg-white px-2 py-0.5 rounded border border-emerald-200">
-                  Local / Direct
+                  Direct Tunnel
                 </span>
               </div>
 
@@ -271,7 +335,7 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
                     {!preselectedFile && (
                       <button
                         onClick={() => fileInputRef.current?.click()}
-                        className="text-xs text-purple-600 hover:underline font-semibold cursor-pointer shrink-0"
+                        className="text-xs text-indigo-600 hover:underline font-semibold cursor-pointer shrink-0"
                       >
                         Browse...
                       </button>
@@ -288,7 +352,7 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
 
                   <button
                     onClick={handleSendFile}
-                    className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer"
+                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer"
                   >
                     <Send size={13} />
                     <span>Stream File Over P2P Tunnel</span>
@@ -308,18 +372,13 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
                             : 'Receiving byte stream...'
                           : progress.stage}
                       </span>
-                      {progress.isPostQuantumActive && (
-                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-semibold border border-purple-200">
-                          ML-KEM-768 Active
-                        </span>
-                      )}
                     </div>
-                    <span className="font-mono text-purple-600 font-bold">{progress.percentage}%</span>
+                    <span className="font-mono text-indigo-600 font-bold">{progress.percentage}%</span>
                   </div>
 
                   <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
                     <div
-                      className="h-full bg-purple-600 transition-all duration-200"
+                      className="h-full bg-indigo-600 transition-all duration-200"
                       style={{ width: `${progress.percentage}%` }}
                     />
                   </div>
@@ -336,16 +395,16 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
 
               {/* RECEIVER COMPLETE */}
               {receivedFile && (
-                <div className="p-4 rounded-xl bg-purple-50 border border-purple-200 text-center space-y-2">
-                  <div className="w-10 h-10 rounded-full bg-purple-600 text-white flex items-center justify-center mx-auto">
+                <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 text-center space-y-2">
+                  <div className="w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center mx-auto shadow-xs">
                     <Check size={20} />
                   </div>
-                  <h4 className="font-bold text-xs text-purple-900">File Reconstructed Bit-Exact!</h4>
-                  <p className="text-[11px] text-purple-700">{receivedFile.name} ({(receivedFile.size / (1024 * 1024)).toFixed(2)} MB)</p>
+                  <h4 className="font-bold text-xs text-indigo-900">File Reconstructed Bit-Exact!</h4>
+                  <p className="text-[11px] text-indigo-700">{receivedFile.name} ({(receivedFile.size / (1024 * 1024)).toFixed(2)} MB)</p>
                   <a
                     href={URL.createObjectURL(receivedFile)}
                     download={receivedFile.name}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-purple-600 text-white text-xs font-semibold rounded-xl hover:bg-purple-700 shadow-2xs transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white text-xs font-semibold rounded-xl hover:bg-indigo-700 shadow-xs transition-colors cursor-pointer"
                   >
                     <Download size={13} />
                     <span>Save to Disk</span>
@@ -354,141 +413,227 @@ export const P2PTunnelModal: React.FC<P2PTunnelModalProps> = ({
               )}
             </div>
           ) : mode === 'send' ? (
-            /* SENDER HANDSHAKE FLOW */
+            /* SENDER 6-DIGIT FLOW */
             <div className="space-y-4">
-              {!offerCode ? (
+              {!pairingCode && !isGeneratingCode ? (
                 <div className="space-y-3">
-                  <p className="text-xs text-slate-500 leading-relaxed">
-                    Generate a direct peer connection offer code to share with another browser. Once connected, files stream directly over WebRTC.
-                  </p>
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
+                    File selected:{' '}
+                    <strong className="text-slate-900 font-semibold">
+                      {fileToSend?.name || preselectedFilename || 'Ready to stream'}
+                    </strong>
+                  </div>
                   <button
                     onClick={handleStartSender}
-                    className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer"
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer"
                   >
                     <Zap size={14} />
-                    <span>Generate P2P Connection Offer</span>
+                    <span>Get 6-Digit Pairing Code</span>
                   </button>
                 </div>
+              ) : isGeneratingCode ? (
+                <div className="p-6 text-center space-y-2">
+                  <Loader2 size={24} className="animate-spin text-indigo-600 mx-auto" />
+                  <p className="text-xs font-bold text-slate-800">Generating 6-Digit PIN...</p>
+                </div>
               ) : (
-                <div className="space-y-3">
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-semibold text-slate-700">
-                      Step 1: Send this Offer Code to Receiver
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={offerCode}
-                        className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-600 truncate"
-                      />
+                <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 text-center space-y-4">
+                  <div className="text-xs text-slate-600">
+                    Ask recipient to enter this 6-digit code in their browser:
+                  </div>
+
+                  <div className="flex items-center justify-center gap-2">
+                    {pairingCode.split('').map((d, i) => (
+                      <React.Fragment key={i}>
+                        {i === 3 && <span className="text-xl font-bold text-slate-300">-</span>}
+                        <div className="w-10 h-13 rounded-xl bg-white border-2 border-indigo-400 font-mono text-2xl font-bold flex items-center justify-center text-slate-900 shadow-2xs">
+                          {d}
+                        </div>
+                      </React.Fragment>
+                    ))}
+                  </div>
+
+                  <div className="flex justify-center gap-2 pt-1">
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(pairingCode);
+                        setHasCopiedCode(true);
+                        setTimeout(() => setHasCopiedCode(false), 2000);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center gap-1 shadow-2xs cursor-pointer"
+                    >
+                      {hasCopiedCode ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
+                      <span>{hasCopiedCode ? 'Copied' : 'Copy PIN'}</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(beamShareUrl);
+                        setHasCopiedBeamLink(true);
+                        setTimeout(() => setHasCopiedBeamLink(false), 2000);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1 shadow-xs cursor-pointer"
+                    >
+                      {hasCopiedBeamLink ? <Check size={13} /> : <Link2 size={13} />}
+                      <span>{hasCopiedBeamLink ? 'Link Copied' : 'Copy 1-Click Link'}</span>
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-center gap-2 text-xs text-indigo-700 pt-1">
+                    <Loader2 size={13} className="animate-spin text-indigo-600" />
+                    <span>Waiting for receiver to connect...</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Collapsible Manual SDP */}
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  onClick={() => setShowManualSdp(!showManualSdp)}
+                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600 font-medium cursor-pointer"
+                >
+                  {showManualSdp ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                  <span>Advanced / Offline Manual SDP Mode</span>
+                </button>
+                {showManualSdp && offerCode && (
+                  <div className="mt-2 p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                    <div className="flex justify-between items-center text-[11px] font-semibold text-slate-700">
+                      <span>Raw Offer SDP:</span>
                       <button
-                        onClick={() => copyToClipboard(offerCode, true)}
-                        className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1 shrink-0 cursor-pointer"
+                        onClick={() => {
+                          navigator.clipboard.writeText(offerCode);
+                          setHasCopiedOffer(true);
+                          setTimeout(() => setHasCopiedOffer(false), 2000);
+                        }}
+                        className="text-indigo-600 hover:underline flex items-center gap-1"
                       >
-                        {hasCopiedOffer ? <Check size={13} /> : <Copy size={13} />}
+                        {hasCopiedOffer ? <Check size={11} /> : <Copy size={11} />}
                         <span>{hasCopiedOffer ? 'Copied' : 'Copy'}</span>
                       </button>
                     </div>
-                  </div>
-
-                  <div className="space-y-1 pt-2">
-                    <label className="text-[11px] font-semibold text-slate-700">
-                      Step 2: Paste Receiver&apos;s Answer Code Here
-                    </label>
-                    <div className="flex items-center gap-2">
+                    <textarea
+                      readOnly
+                      value={offerCode}
+                      rows={2}
+                      className="w-full font-mono text-[9px] p-1.5 bg-white rounded border border-slate-200"
+                    />
+                    <div className="flex gap-2 pt-1">
                       <input
                         type="text"
-                        placeholder="Paste receiver's answer string..."
+                        placeholder="Paste receiver answer string..."
                         value={answerInput}
                         onChange={(e) => setAnswerInput(e.target.value)}
-                        className="flex-1 px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono text-slate-800"
+                        className="flex-1 font-mono text-[11px] p-1.5 bg-white rounded border border-slate-200"
                       />
                       <button
-                        onClick={handleApplyAnswer}
+                        onClick={handleApplyManualAnswer}
                         disabled={!answerInput.trim()}
-                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-1 shrink-0 cursor-pointer"
+                        className="px-2.5 py-1 bg-slate-800 text-white rounded text-xs font-semibold disabled:opacity-50"
                       >
-                        <ArrowRight size={13} />
-                        <span>Connect</span>
+                        Apply
                       </button>
                     </div>
                   </div>
-
-                  <div className="p-3 bg-purple-50/60 border border-purple-100 rounded-xl flex items-center gap-2 text-[11px] text-purple-700">
-                    <Loader2 size={13} className="animate-spin text-purple-600 shrink-0" />
-                    <span>Waiting for receiver&apos;s answer...</span>
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           ) : (
-            /* RECEIVER HANDSHAKE FLOW */
+            /* RECEIVER 6-DIGIT FLOW */
             <div className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-slate-700">
-                  Step 1: Paste Sender&apos;s Offer Code
-                </label>
-                <div className="flex items-center gap-2">
+              <div className="text-center space-y-3 py-2">
+                <div className="text-xs text-slate-600">Enter the 6-digit PIN from the sender:</div>
+                <div className="flex justify-center">
                   <input
                     type="text"
-                    placeholder="Paste offer string here..."
-                    value={offerInput}
-                    onChange={(e) => setOfferInput(e.target.value)}
-                    className="flex-1 px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono text-slate-800"
+                    maxLength={7}
+                    placeholder="123 - 456"
+                    value={receiverCodeInput}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
+                      if (val.length > 3) {
+                        setReceiverCodeInput(`${val.slice(0, 3)} - ${val.slice(3)}`);
+                      } else {
+                        setReceiverCodeInput(val);
+                      }
+                    }}
+                    className="w-48 h-12 text-center font-mono text-xl tracking-widest font-extrabold rounded-xl border-2 border-indigo-400 bg-indigo-50/20 text-slate-900 focus:outline-none focus:border-indigo-600"
                   />
-                  <button
-                    onClick={handleProcessOffer}
-                    disabled={!offerInput.trim()}
-                    className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shrink-0 cursor-pointer"
-                  >
-                    Accept Offer
-                  </button>
                 </div>
+                <button
+                  onClick={handleConnectByCode}
+                  disabled={receiverCodeInput.replace(/\D/g, '').length !== 6 || isConnectingReceiver}
+                  className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer flex items-center justify-center gap-2"
+                >
+                  {isConnectingReceiver ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      <span>Connecting Direct Tunnel...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Zap size={14} />
+                      <span>Connect &amp; Receive File</span>
+                    </>
+                  )}
+                </button>
               </div>
 
-              {generatedAnswer && (
-                <div className="space-y-2 pt-2">
-                  <label className="text-[11px] font-semibold text-slate-700">
-                    Step 2: Copy this Answer and Send it back to Sender
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      readOnly
-                      value={generatedAnswer}
-                      className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-600 truncate"
+              {/* Collapsible Manual SDP for Receiver */}
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  onClick={() => setShowManualSdp(!showManualSdp)}
+                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600 font-medium cursor-pointer"
+                >
+                  {showManualSdp ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                  <span>Advanced / Offline Manual SDP Mode</span>
+                </button>
+                {showManualSdp && (
+                  <div className="mt-2 p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                    <textarea
+                      placeholder="Paste raw sender offer string..."
+                      value={offerInput}
+                      onChange={(e) => setOfferInput(e.target.value)}
+                      rows={2}
+                      className="w-full font-mono text-[9px] p-1.5 bg-white rounded border border-slate-200"
                     />
-                    <button
-                      onClick={() => copyToClipboard(generatedAnswer, false)}
-                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1 shrink-0 cursor-pointer"
-                    >
-                      {hasCopiedAnswer ? <Check size={13} /> : <Copy size={13} />}
-                      <span>{hasCopiedAnswer ? 'Copied' : 'Copy'}</span>
-                    </button>
+                    {!generatedAnswer && (
+                      <button
+                        onClick={handleProcessManualOffer}
+                        disabled={!offerInput.trim()}
+                        className="px-3 py-1.5 bg-indigo-600 text-white rounded text-xs font-semibold disabled:opacity-50"
+                      >
+                        Accept Offer &amp; Generate Answer
+                      </button>
+                    )}
+                    {generatedAnswer && (
+                      <div className="pt-1 space-y-1">
+                        <div className="flex justify-between items-center text-[11px] font-semibold text-slate-700">
+                          <span>Your Answer:</span>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(generatedAnswer);
+                              setHasCopiedAnswer(true);
+                              setTimeout(() => setHasCopiedAnswer(false), 2000);
+                            }}
+                            className="text-indigo-600 hover:underline flex items-center gap-1"
+                          >
+                            {hasCopiedAnswer ? <Check size={11} /> : <Copy size={11} />}
+                            <span>{hasCopiedAnswer ? 'Copied' : 'Copy'}</span>
+                          </button>
+                        </div>
+                        <textarea
+                          readOnly
+                          value={generatedAnswer}
+                          rows={2}
+                          className="w-full font-mono text-[9px] p-1.5 bg-white rounded border border-slate-200"
+                        />
+                      </div>
+                    )}
                   </div>
-                  <div className="p-3 bg-purple-50/60 border border-purple-100 rounded-xl flex items-center gap-2 text-[11px] text-purple-700">
-                    <Loader2 size={13} className="animate-spin text-purple-600 shrink-0" />
-                    <span>Waiting for sender to lock handshake...</span>
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )}
-        </div>
-
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 flex items-center justify-between text-[11px] text-slate-400">
-          <div className="flex items-center gap-1.5">
-            <Shield size={12} className="text-purple-600" />
-            <span>End-to-End Encrypted RTCDataChannel</span>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
-          >
-            Close
-          </button>
         </div>
       </div>
     </div>

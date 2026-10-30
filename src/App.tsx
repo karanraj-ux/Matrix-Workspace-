@@ -129,6 +129,8 @@ export default function App() {
       if (activeAccountIds.size > 0) {
         setCurrentView('drive');
       }
+    } else if (typeof window !== 'undefined' && window.location.hash.includes('beam=')) {
+      setCurrentView('p2p');
     }
 
     const checkAndInitGsi = () => {
@@ -690,7 +692,7 @@ export default function App() {
                 {/* 4. DIRECT P2P BEAM */}
                 {currentView === 'p2p' && (
                   <div className="absolute inset-0 bg-[#F8FAFC] flex-col overflow-y-auto flex">
-                    <P2PBeamView />
+                    <P2PBeamView onNavigateToVault={() => setCurrentView('drive')} />
                   </div>
                 )}
 

@@ -438,3 +438,98 @@ export class WebRtcP2PTunnel {
     this.pqSessionKey = null;
   }
 }
+
+/**
+ * 6-DIGIT AUTOMATIC P2P SIGNALING HELPERS
+ * Completely replaces manual copy-pasting of huge SDP blocks with a simple 6-digit PIN.
+ */
+
+export async function createP2PRoomWithCode(offerString: string): Promise<string> {
+  const res = await fetch('/api/p2p/create-room', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ offer: offerString }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to generate 6-digit pairing room');
+  }
+  const data = await res.json();
+  return data.code;
+}
+
+export async function fetchOfferByCode(code: string): Promise<string> {
+  const cleanCode = code.replace(/\D/g, '');
+  const res = await fetch(`/api/p2p/room/${cleanCode}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Code invalid or room expired');
+  }
+  const data = await res.json();
+  return data.offer;
+}
+
+export async function submitAnswerByCode(code: string, answerString: string): Promise<void> {
+  const cleanCode = code.replace(/\D/g, '');
+  const res = await fetch(`/api/p2p/room/${cleanCode}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answer: answerString }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to submit answer to room');
+  }
+}
+
+export async function pollForAnswer(
+  code: string,
+  onAnswerReceived: (answer: string) => void,
+  signal?: AbortSignal,
+  timeoutMs: number = 300000
+): Promise<string> {
+  const cleanCode = code.replace(/\D/g, '');
+  const start = Date.now();
+
+  return new Promise<string>((resolve, reject) => {
+    let timer: any = null;
+
+    const cleanup = () => {
+      if (timer) clearInterval(timer);
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        cleanup();
+        reject(new Error('Signaling aborted'));
+      });
+    }
+
+    const check = async () => {
+      if (Date.now() - start > timeoutMs) {
+        cleanup();
+        reject(new Error('Pairing timed out. Receiver did not enter code in time.'));
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/p2p/room/${cleanCode}/answer`, { signal });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.answer) {
+            cleanup();
+            onAnswerReceived(data.answer);
+            resolve(data.answer);
+            return;
+          }
+        }
+      } catch (err: any) {
+        if (signal?.aborted) return;
+      }
+    };
+
+    timer = setInterval(check, 1200);
+    // Initial check immediately
+    check();
+  });
+}

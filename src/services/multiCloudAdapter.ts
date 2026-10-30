@@ -209,6 +209,23 @@ class GoogleDriveAdapter implements ICloudFileAdapter {
 
   async downloadChunk(account: AccountToken, options: DownloadChunkOptions): Promise<ArrayBuffer> {
     await ensureValidToken(account);
+
+    // Verify file is not trashed (Google Drive API returns 200 on trashed files with alt=media unless trashed status is explicitly checked)
+    try {
+      const metaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${options.fileId}?fields=trashed`, {
+        headers: { Authorization: `Bearer ${account.accessToken}` },
+        signal: options.signal,
+      });
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        if (meta.trashed) {
+          throw new Error('Google Drive chunk is in Trash (deleted by user). Triggering RAID-5 reconstruction.');
+        }
+      }
+    } catch (metaErr: any) {
+      if (metaErr.message?.includes('Trash')) throw metaErr;
+    }
+
     const headers: Record<string, string> = { Authorization: `Bearer ${account.accessToken}` };
     if (options.rangeStart !== undefined) {
       headers['Range'] = `bytes=${options.rangeStart}-${options.rangeEnd !== undefined ? options.rangeEnd : ''}`;

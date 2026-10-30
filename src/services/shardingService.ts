@@ -56,21 +56,20 @@ export interface StoredManifestRecord {
 
 /**
  * Select the best account to store the RAID-5 XOR parity block,
- * prioritizing providers that have fewer chunks allocated for true multi-cloud fault tolerance.
+ * prioritizing accounts and providers that have fewer chunks allocated for true multi-cloud fault tolerance.
  */
 const targetProviderForParity = (
   accounts: AccountToken[],
-  providerChunkCounts: Record<string, number>
+  accountChunkCounts: Record<string, number>
 ): AccountToken => {
   if (accounts.length <= 1) return accounts[0];
 
-  // Find the provider that has the least chunk allocation
+  // Find the specific account that has the least chunk allocation
   let minCount = Infinity;
   let candidateAccount = accounts[0];
 
   for (const acc of accounts) {
-    const p = acc.provider || 'google';
-    const count = providerChunkCounts[p] || 0;
+    const count = accountChunkCounts[acc.id] || 0;
     if (count < minCount) {
       minCount = count;
       candidateAccount = acc;
@@ -96,9 +95,6 @@ export const uploadShardedFile = async (
 ): Promise<ShardManifest> => {
   const { enableEncryption = true, enableParity = true, onProgress } = options;
 
-  // 4MB chunks for optimal browser memory and network performance
-  const CHUNK_SIZE = 4 * 1024 * 1024;
-  const dataChunksCount = Math.ceil(file.size / CHUNK_SIZE);
   const activeAccounts = accounts.filter(a => !a.isExpired);
   const effectiveAccounts: AccountToken[] = activeAccounts.length > 0 ? activeAccounts : [
     {
@@ -110,6 +106,14 @@ export const uploadShardedFile = async (
       provider: 'google',
     },
   ];
+
+  // Dynamic Adaptive Chunk Sizing:
+  // Slices files evenly across all active accounts so RAID-5 stripes and parity blocks reside on separate physical accounts
+  const minChunkThreshold = 16 * 1024; // 16 KB minimum slice
+  const CHUNK_SIZE = effectiveAccounts.length > 1 && file.size >= minChunkThreshold * 2
+    ? Math.min(4 * 1024 * 1024, Math.max(minChunkThreshold, Math.ceil(file.size / effectiveAccounts.length)))
+    : 4 * 1024 * 1024;
+  const dataChunksCount = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
   // 1. DYNAMIC QUOTA-AWARE HETEROGENEOUS LOAD BALANCING
   // Fetch real-time available storage on each account to balance allocation intelligently
@@ -181,8 +185,8 @@ export const uploadShardedFile = async (
     );
   };
 
-  // Provider allocation tracker to place parity block on the least-burdened alternative provider
-  const providerChunkCounts: Record<string, number> = {};
+  // Account allocation tracker to place parity block on the least-burdened alternative account
+  const accountChunkCounts: Record<string, number> = {};
 
   // 2. Read, encrypt, and stripe all data chunks with Heterogeneous Provider Distribution
   for (let i = 0; i < dataChunksCount; i++) {
@@ -217,10 +221,10 @@ export const uploadShardedFile = async (
       payloadBlob = new Blob([sliceBuffer], { type: 'application/octet-stream' });
     }
 
-    // Heterogeneous assignment: Distribute sequentially across alternating providers
+    // Heterogeneous assignment: Distribute sequentially across alternating accounts & providers
     const targetAccount = heterogeneousAccounts[i % heterogeneousAccounts.length];
     const targetProvider = targetAccount.provider || 'google';
-    providerChunkCounts[targetProvider] = (providerChunkCounts[targetProvider] || 0) + 1;
+    accountChunkCounts[targetAccount.id] = (accountChunkCounts[targetAccount.id] || 0) + 1;
 
     onProgress(
       Math.round(((i + 0.5) / totalSteps) * 100),
@@ -277,6 +281,7 @@ export const uploadShardedFile = async (
     );
 
     const parityBuffer = await computeParityWorker(rawChunkBuffers);
+    const parityByteLength = parityBuffer.byteLength;
 
     let parityBlob: Blob;
     let parityCryptoMeta: ShardChunk['cryptoMeta'] = undefined;
@@ -293,10 +298,10 @@ export const uploadShardedFile = async (
       parityBlob = new Blob([parityBuffer], { type: 'application/octet-stream' });
     }
 
-    // Allocate parity chunk to maximize provider divergence (prefer an alternative cloud provider)
-    // Find provider with lowest chunk allocation to ensure true heterogeneous fault tolerance
-    let minAllocatedProvider = targetProviderForParity(heterogeneousAccounts, providerChunkCounts);
-    const parityAccount = minAllocatedProvider;
+    // Allocate parity chunk to maximize account and provider divergence
+    // Find account with lowest chunk allocation to ensure true heterogeneous fault tolerance
+    let minAllocatedAccount = targetProviderForParity(heterogeneousAccounts, accountChunkCounts);
+    const parityAccount = minAllocatedAccount;
     const parityProvider = parityAccount.provider || 'google';
 
     onProgress(
@@ -325,7 +330,7 @@ export const uploadShardedFile = async (
         driveFileId: parityUploadRes.fileId,
         downloadPath: parityUploadRes.downloadPath,
         chunkIndex: dataChunksCount,
-        chunkSizeBytes: parityBuffer.byteLength,
+        chunkSizeBytes: parityByteLength,
         isParity: true,
         cryptoMeta: parityCryptoMeta,
       };
@@ -440,6 +445,9 @@ export const downloadShardedFile = async (
       } catch (err: any) {
         console.warn(`Authenticated chunk download failed for chunk ${chunk.chunkIndex}:`, err);
         lastError = err;
+        if (err?.message?.includes('Trash') || err?.message?.includes('404') || err?.message?.includes('not found')) {
+          throw err;
+        }
       }
     }
 
@@ -554,6 +562,13 @@ export const downloadShardedFile = async (
 
   onProgress(100, totalChunks, totalChunks, 'Assembly complete.');
 
+  // Rigorous validation: ensure every data chunk is non-null and valid
+  for (let i = 0; i < totalChunks; i++) {
+    if (!chunkBuffers[i] || chunkBuffers[i]!.byteLength === 0) {
+      throw new Error(`Reassembly failed: Chunk ${i + 1} could not be retrieved or reconstructed.`);
+    }
+  }
+
   const finalBlobs = chunkBuffers.map(buf => new Blob([buf!]));
   return new Blob(finalBlobs, { type: manifest.mimeType || 'application/octet-stream' });
 };
@@ -641,10 +656,15 @@ export const verifyShardIntegrity = async (
     }
     try {
       if (chunk.provider === 'google' || !chunk.provider) {
-        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${chunk.driveFileId}?fields=id`, {
+        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${chunk.driveFileId}?fields=id,trashed`, {
           headers: { Authorization: `Bearer ${acc.accessToken}` },
         });
-        if (!res.ok) missing++;
+        if (!res.ok) {
+          missing++;
+        } else {
+          const data = await res.json();
+          if (data.trashed) missing++;
+        }
       } else {
         // Assume healthy if account token is present
         if (!acc.accessToken) missing++;
@@ -658,7 +678,21 @@ export const verifyShardIntegrity = async (
   if (manifest.parityChunk) {
     const pAcc = accounts.find(a => a.id === manifest.parityChunk!.accountId);
     if (pAcc && !pAcc.isExpired) {
-      parityHealthy = true;
+      if (manifest.parityChunk.provider === 'google' || !manifest.parityChunk.provider) {
+        try {
+          const pRes = await fetch(`https://www.googleapis.com/drive/v3/files/${manifest.parityChunk.driveFileId}?fields=id,trashed`, {
+            headers: { Authorization: `Bearer ${pAcc.accessToken}` },
+          });
+          if (pRes.ok) {
+            const pData = await pRes.json();
+            if (!pData.trashed) parityHealthy = true;
+          }
+        } catch {
+          parityHealthy = false;
+        }
+      } else {
+        parityHealthy = true;
+      }
     }
   }
 
